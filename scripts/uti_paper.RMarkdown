@@ -45,12 +45,38 @@ library(eulerr)
 library(devtools)
 library(xCell)
 library(circlize)
+library(plotly)
+
+# List of your packages
+pkgs <- c(
+  "DESeq2", "ggplot2", "biomaRt", "EnhancedVolcano", "factoextra", "org.Hs.eg.db",
+  "ensembldb", "tximport", "AnnotationHub", "clusterProfiler", "AnnotationDbi",
+  "ggvenn", "ComplexHeatmap", "reshape2", "dplyr", "tidyr", "readxl", "pROC",
+  "circlize", "ggpubr", "effsize", "mclust", "classInt", "patchwork", "grid",
+  "eulerr", "devtools", "xCell", "plotly"
+)
+
+# function to get version
+get_version <- function(pkg) {
+  if (requireNamespace(pkg, quietly = TRUE)) {
+    as.character(packageVersion(pkg))
+  } else {
+    "Not Installed"
+  }
+}
+
+# create named vector of versions
+pkg_versions <- sapply(pkgs, get_version)
+
+# print nicely
+versions_df <- data.frame(Package = names(pkg_versions), Version = pkg_versions)
+print(versions_df, row.names = FALSE)
 ```
 
 ## Load in necessary objects
 
 ```{r load objects}
-load("load_before.RData")
+load("../data/load_before.RData")
 #' Contains: 
 #' - txi.data: uses tximport to convert Salmon gene expression data into R objects
 #' - reads.meta.counts: patient metadata appended to reads-per-million kraken-derived information on all species present in these samples
@@ -155,6 +181,36 @@ dds.unsupervised <- DESeq(dds.unsupervised)
 
 ```
 
+a2. briefly do it for 239 instead
+
+```{r filter patients and run unsupervised DESeq2}
+# # ID patients that express over 5000 human genes
+# human.gene.counts <- apply(txi.data.239$counts, 2, function(x) sum(x != 0))
+# human.gene.over.thres <- subset(human.gene.counts, human.gene.counts > 5000)
+# human.gene.over.thres <- human.gene.over.thres[na.omit(names(human.gene.over.thres))]
+# 
+# # Subset txi.data to only include these patients
+# txi.data$abundance <- subset(txi.data$abundance, select = c(names(human.gene.over.thres)))
+# txi.data$counts <- subset(txi.data$counts, select = c(names(human.gene.over.thres)))
+# txi.data$length <- subset(txi.data$length, select = c(names(human.gene.over.thres)))
+# 
+# # Calculate the mean counts of each gene
+# gene_means <- rowMeans(txi.data$counts)
+# 
+# # Filter out genes with mean counts less than 1
+# txi.data$counts <- txi.data$counts[gene_means > 1, ]
+# txi.data$abundance <- txi.data$abundance[gene_means > 1, ]
+# txi.data$length <- txi.data$length[gene_means > 1, ]
+# 
+# print(dim(txi.data$abundance))
+# 
+# col_data <- data.frame(row.names = colnames(txi.data$counts), condition = factor(rep(1, ncol(txi.data$counts))))
+# col_data <- cbind(col_data, reads.meta.counts)
+# dds.unsupervised <- DESeqDataSetFromTximport(txi.data, colData = col_data, design = ~1)
+# dds.unsupervised <- DESeq(dds.unsupervised)
+
+```
+
 b. Stabilize the data and run PCA
 
 ```{r vst and pca}
@@ -170,8 +226,6 @@ pca_df <- data.frame(
 
 TEST b2. again, but plot 3D pca and see what this shows
 ```{r}
-library(plotly)
-
 # mimic plotPCA internals to get more PCs
 ntop <- 500
 rv <- rowVars(assay(vsd))
@@ -202,13 +256,14 @@ summary(pca)$importance[2, 3]
 c. k-means clustering
 
 ```{r k-means clustering}
+set.seed(1)
 # Run k-means clustering, k = 2
 kmeans_result_pca <- kmeans(pca_df[ , c("PC1", "PC2")], centers = 2, nstart = 25)
 
 # Add cluster assignments to your data frame
 pca_df$cluster <- as.factor(kmeans_result_pca$cluster)
 
-cluster_colors <- c("red", "blue")  # Colorblind-friendly red & blue
+cluster_colors <- c("red", "blue")
 
 # Create the plot comparing PC1 and PC2
 k_means_plot_pca <- ggplot(pca_df, aes(x = PC1, y = PC2, color = factor(cluster))) +
@@ -566,6 +621,7 @@ a. Gene expression heatmap overlayed with pathogen abundance score
 # Create a patient order based on k-means group: positive (1) then negative (0)
 ordered_k_groups <- k_groups[order(k_groups, decreasing = TRUE)]
 ordered_k_groups_name <- names(ordered_k_groups)
+ordered_k_groups <- sapply(ordered_k_groups, function(x) ifelse(x == 0, 2, 1))
 
 # Find up and down genes
 sig.genes.up <- rownames(res.df.human[res.df.human$log2FoldChange > 2 & res.df.human$padj < 1e-25 , ])
@@ -586,15 +642,16 @@ temp[is.na(temp)] = 0
 temp <- temp[sig.genes.heatmap , ]
 
 # Add first col annotation- the k-means cluster
+
 col_anno <- HeatmapAnnotation(k_means_group = ordered_k_groups,
-                              col = list(k_means_group = c("0" = "blue", "1" = "red")))
+                              col = list(ordered_k_groups = c("2" = "blue", "1" = "red")))
 
 # Add second col annotation, unlogged pathogen abundance score bar plot
 rpm_sums_to_use <- rpm_sums[ordered_k_groups_name]
 col_anno <- HeatmapAnnotation(
   `Unlogged Pathogen\nAbundance Score` = anno_barplot(10^rpm_sums_to_use, gp = gpar(fill = "gray")),
   `k-means cluster` = ordered_k_groups, 
-  col = list(`k-means cluster` = c("0" = "blue", "1" = "red")),
+  col = list(`k-means cluster` = c("2" = "blue", "1" = "red")),
   annotation_name_gp = gpar(fontsize = 10, fontface = "bold"),
   annotation_name_rot = 0
 )
@@ -603,13 +660,13 @@ col_anno <- HeatmapAnnotation(
 
 # Do this for binary now to help for the row annotation
 binary.up <- rep("1", length(sig.genes.up))
-binary.down <- rep("0", length(sig.genes.down))
+binary.down <- rep("2", length(sig.genes.down))
 binary.combined <- c(binary.up, binary.down)
 names(binary.combined) <- sig.genes.heatmap
 
 row_anno <- rowAnnotation(
   `Gene Expression` = binary.combined, 
-  col = list(`Gene Expression` = c("0" = "blue", "1" = "red")),
+  col = list(`Gene Expression` = c("2" = "blue", "1" = "red")),
   annotation_name_gp = gpar(fontsize = 10, fontface = "bold"),
   annotation_name_rot = 0, 
   annotation_name_offset = unit(2, "mm")
@@ -646,7 +703,7 @@ plot_data <- data.frame(
 
 # Assign colors based on k-means group position (left = red, right = blue)
 plot_data$point_color <- ifelse(as.numeric(plot_data$k_means_group) <= length(unique(ordered_k_groups)) / 2, "red", "blue")
-plot_data$k_means_group <- factor(plot_data$k_means_group, levels = c("1", "0"), labels = c("Group 1", "Group 2"))
+plot_data$k_means_group <- factor(plot_data$k_means_group, levels = c("1", "2"), labels = c("Group 1", "Group 2"))
 
 # Perform a stat test to confirm what p val is for both samples: 
 shapiro_results <- by(plot_data$rpm_sums, plot_data$k_means_group, shapiro.test)
@@ -1314,13 +1371,16 @@ pca_plot_4f_3d <- plot_ly(
 pca_plot_4f_3d
 ```
 
-g. Take these 8 MT_HR_Negative patients, and compare leukocyte esterase with the all positive group
+g. Take these 8 MT_HR_Negative patients, and compare leukocyte esterase/pathogen score with the all positive group
 
 ```{r LE activity between groups}
+
+# First for LE
+
 pca_df_4f$LE_discrete <- reads.meta.counts[-(which(pca_df$Sample == "20070")) , ]$enrleuks
 
 pca_df_4f_filtered <- pca_df_4f[pca_df_4f$group %in% c("All_Positive", "MT_HR_Negative"), ]
-ggplot(pca_df_4f_filtered, aes(x = factor(group), y = LE_discrete, fill = factor(group))) +
+comp_1 <- ggplot(pca_df_4f_filtered, aes(x = factor(group), y = LE_discrete, fill = factor(group))) +
   geom_violin(trim = FALSE, show.legend = FALSE) +  # Violin plot with no trim and without legend
   geom_boxplot(width = 0.1, color = "black", fill = "white", alpha = 0.6, outlier.shape = NA) +  # Boxplot inside violins
   labs(x = "Discrepancy Group", y = "Absolute Leukocyte Esterase Activity", title = "Distribution of Factor Across All_Positive and MT_HR_Negative") +
@@ -1330,6 +1390,26 @@ ggplot(pca_df_4f_filtered, aes(x = factor(group), y = LE_discrete, fill = factor
         panel.border = element_rect(color = "black", fill = NA, size = 1))  # Add a border around the plot
 
 wilcox.test(LE_discrete ~ group, data = pca_df_4f_filtered)
+
+print(comp_1)
+
+# Next for pathogen abundance
+
+pca_df_4f$rpm_sums <- rpm_sums[names(rpm_sums) != "20070"]
+pca_df_4f_filtered <- pca_df_4f[pca_df_4f$group %in% c("All_Positive", "MT_HR_Negative"), ]
+
+comp_2 <- ggplot(pca_df_4f_filtered, aes(x = factor(group), y = 10^rpm_sums, fill = factor(group))) +
+  geom_violin(trim = FALSE, show.legend = FALSE) +  # Violin plot with no trim and without legend
+  geom_boxplot(width = 0.1, color = "black", fill = "white", alpha = 0.6, outlier.shape = NA) +  # Boxplot inside violins
+  labs(x = "Discrepancy Group", y = "Pathogen RPM", title = "Distribution of Factor Across All_Positive and MT_HR_Negative") +
+  scale_fill_manual(values = c("All_Positive" = "purple", "MT_HR_Negative" = "darkgreen")) +  # Custom colors for the groups
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        panel.border = element_rect(color = "black", fill = NA, size = 1))  # Add a border around the plot
+
+wilcox.test(10^rpm_sums ~ group, data = pca_df_4f_filtered)
+
+print(comp_2)
 
 ```
 
@@ -1384,3 +1464,10 @@ xcell_heatmap <- Heatmap(
 # Draw the heatmap
 print(xcell_heatmap)
 ```
+
+h. Compare E. coli abundance across positive patients
+
+```{r cell type enrichment}
+
+```
+

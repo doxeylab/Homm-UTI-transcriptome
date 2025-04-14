@@ -1,0 +1,12 @@
+# Mark .R files as R source code
+*.R linguist-language=R
+*.RMarkdown linguist-language=R
+
+# Mark .py files as Python source code
+*.py linguist-language=Python
+
+# Treat all HTML files as generated, so they don't count towards the language stats
+*.html linguist-generated=true
+
+# Mark .sh files as Shell source code
+*.sh linguist-language=Bash

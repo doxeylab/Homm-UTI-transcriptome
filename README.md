@@ -1,2 +1,11 @@
-# Homm-UTI-transcriptome
-Code for Homm et al.
+# Code and biostatistical analysis from Homm et al.
+- Data
+	- /data/uti.html: downloadable web document with R code and plots.
+	- /data/reads.meta.counts.RData: FILL
+	- /data/rpmdata.RData: FILL
+	- /data/txi.data.RData: FILL
+- Scripts
+	- /scripts/uti.RMarkdown: all statistical analyses done in R
+	- /scripts/salmon.sh: FILL
+	- /scripts/kraken_bracken.sh: FILL
+	- /scripts/fastp.py: FILL
