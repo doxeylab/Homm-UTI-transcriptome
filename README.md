@@ -6,6 +6,6 @@
 	- /data/txi.data.RData: FILL
 - Scripts
 	- /scripts/uti.RMarkdown: all statistical analyses done in R
-	- /scripts/salmon.sh: FILL
-	- /scripts/kraken_bracken.sh: FILL
-	- /scripts/fastp.py: FILL
+	- /scripts/salmon.sh: script used to run Salmon
+	- /scripts/kraken_bracken.sh: script used to run Kraken2 and Bracken
+	- /scripts/fastp.py: script used to run fastp
