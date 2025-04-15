@@ -76,20 +76,60 @@ print(versions_df, row.names = FALSE)
 ## Load in necessary objects
 
 ```{r load objects}
-load("../data/load_before.RData")
-#' Contains: 
-#' - txi.data: uses tximport to convert Salmon gene expression data into R objects
-#' - reads.meta.counts: patient metadata appended to reads-per-million kraken-derived information on all species present in these samples
-#' - rpmdata: just reads-per-million kraken-derived information on all species present in these samples
+#' Contains RPM data for all species, along with corresponding metadata
+load("../data/reads.meta.counts.239.RData")
+
+#' Contains txi object with all Salmon-mapped human gene expression levels
+load("../data/txi.data.239.RData")
+
+#' Contains just RPM data for all species
+load("../data/rpmdata.239.RData")
 ```
 
-## 0. Proportion of human and non-human reads across the patients
+
+## 1. Salmon-based unsupervised host-response analysis
+
+a. Filter out patients with <= 5000 human genes, and genes with mean count < 1, then run DESeq2 with no condition (unsupervised)
+
+```{r filter patients and run unsupervised DESeq2}
+# ID patients that express over 5000 human genes
+human.gene.counts <- apply(txi.data.239$counts, 2, function(x) sum(x != 0))
+human.gene.over.thres <- subset(human.gene.counts, human.gene.counts > 5000)
+human.gene.over.thres <- human.gene.over.thres[na.omit(names(human.gene.over.thres))]
+
+# Subset txi.data to only include these patients
+txi.data.239$abundance <- subset(txi.data.239$abundance, select = c(names(human.gene.over.thres)))
+txi.data.239$counts <- subset(txi.data.239$counts, select = c(names(human.gene.over.thres)))
+txi.data.239$length <- subset(txi.data.239$length, select = c(names(human.gene.over.thres)))
+
+# Calculate the mean counts of each gene
+gene_means <- rowMeans(txi.data.239$counts)
+
+# Filter out genes with mean counts less than 1
+txi.data.239$counts <- txi.data.239$counts[gene_means > 1, ]
+txi.data.239$abundance <- txi.data.239$abundance[gene_means > 1, ]
+txi.data.239$length <- txi.data.239$length[gene_means > 1, ]
+
+print(dim(txi.data.239$abundance))
+
+col_data <- data.frame(row.names = colnames(txi.data.239$counts), condition = factor(rep(1, ncol(txi.data.239$counts))))
+col_data <- cbind(col_data, reads.meta.counts.239[human.gene.over.thres , ])
+dds.unsupervised <- DESeqDataSetFromTximport(txi.data.239, colData = col_data, design = ~1)
+dds.unsupervised <- DESeq(dds.unsupervised)
+
+# Initialize df's to be used in downstream analysis
+reads.meta.counts <- reads.meta.counts.239[names(human.gene.over.thres) , ]
+rpmdata <- rpmdata.239[names(human.gene.over.thres) , ]
+txi.data <- txi.data.239
+```
+
+b. Proportion of human and non-human reads across the patients
 
 ```{r read proportions}
 
 # Obtain reads data
 reads <- reads.meta.counts$total.reads
-human.reads <- reads.meta.counts$human.reads
+human.reads <- reads.meta.counts$total.reads * (rpmdata$`Homo sapiens` / 1000000)
 data <- data.frame(
   patient = 1:length(human.reads),
   non_human_reads = reads - human.reads,
@@ -146,72 +186,10 @@ heatmap <- ggplot(data, aes(x = factor(patient, levels = data$patient), y = 1, f
 # Combine both plots using patchwork with adjusted heights
 final_plot <- stacked_bar / heatmap + plot_layout(heights = c(4, 1))
 
-final_plot
+print(final_plot)
 ```
 
-## 1. Salmon-based unsupervised host-response analysis
-
-a. Filter out patients with <= 5000 human genes, and genes with mean count < 1, then run DESeq2 with no condition (unsupervised)
-
-```{r filter patients and run unsupervised DESeq2}
-# ID patients that express over 5000 human genes
-human.gene.counts <- apply(txi.data$counts, 2, function(x) sum(x != 0))
-human.gene.over.thres <- subset(human.gene.counts, human.gene.counts > 5000)
-human.gene.over.thres <- human.gene.over.thres[na.omit(names(human.gene.over.thres))]
-
-# Subset txi.data to only include these patients
-txi.data$abundance <- subset(txi.data$abundance, select = c(names(human.gene.over.thres)))
-txi.data$counts <- subset(txi.data$counts, select = c(names(human.gene.over.thres)))
-txi.data$length <- subset(txi.data$length, select = c(names(human.gene.over.thres)))
-
-# Calculate the mean counts of each gene
-gene_means <- rowMeans(txi.data$counts)
-
-# Filter out genes with mean counts less than 1
-txi.data$counts <- txi.data$counts[gene_means > 1, ]
-txi.data$abundance <- txi.data$abundance[gene_means > 1, ]
-txi.data$length <- txi.data$length[gene_means > 1, ]
-
-print(dim(txi.data$abundance))
-
-col_data <- data.frame(row.names = colnames(txi.data$counts), condition = factor(rep(1, ncol(txi.data$counts))))
-col_data <- cbind(col_data, reads.meta.counts)
-dds.unsupervised <- DESeqDataSetFromTximport(txi.data, colData = col_data, design = ~1)
-dds.unsupervised <- DESeq(dds.unsupervised)
-
-```
-
-a2. briefly do it for 239 instead
-
-```{r filter patients and run unsupervised DESeq2}
-# # ID patients that express over 5000 human genes
-# human.gene.counts <- apply(txi.data.239$counts, 2, function(x) sum(x != 0))
-# human.gene.over.thres <- subset(human.gene.counts, human.gene.counts > 5000)
-# human.gene.over.thres <- human.gene.over.thres[na.omit(names(human.gene.over.thres))]
-# 
-# # Subset txi.data to only include these patients
-# txi.data$abundance <- subset(txi.data$abundance, select = c(names(human.gene.over.thres)))
-# txi.data$counts <- subset(txi.data$counts, select = c(names(human.gene.over.thres)))
-# txi.data$length <- subset(txi.data$length, select = c(names(human.gene.over.thres)))
-# 
-# # Calculate the mean counts of each gene
-# gene_means <- rowMeans(txi.data$counts)
-# 
-# # Filter out genes with mean counts less than 1
-# txi.data$counts <- txi.data$counts[gene_means > 1, ]
-# txi.data$abundance <- txi.data$abundance[gene_means > 1, ]
-# txi.data$length <- txi.data$length[gene_means > 1, ]
-# 
-# print(dim(txi.data$abundance))
-# 
-# col_data <- data.frame(row.names = colnames(txi.data$counts), condition = factor(rep(1, ncol(txi.data$counts))))
-# col_data <- cbind(col_data, reads.meta.counts)
-# dds.unsupervised <- DESeqDataSetFromTximport(txi.data, colData = col_data, design = ~1)
-# dds.unsupervised <- DESeq(dds.unsupervised)
-
-```
-
-b. Stabilize the data and run PCA
+c. Stabilize the data and run PCA
 
 ```{r vst and pca}
 normalized_counts <- counts(dds.unsupervised, normalized = TRUE)
@@ -224,7 +202,7 @@ pca_df <- data.frame(
   )
 ```
 
-TEST b2. again, but plot 3D pca and see what this shows
+d. Same PCA, but plot in 3D
 ```{r}
 # mimic plotPCA internals to get more PCs
 ntop <- 500
@@ -253,7 +231,7 @@ summary(pca)$importance[2, 2]
 summary(pca)$importance[2, 3]
 ```
 
-c. k-means clustering
+e. k-means clustering
 
 ```{r k-means clustering}
 set.seed(1)
@@ -297,7 +275,8 @@ k_means_plot_pca <- ggplot(pca_df, aes(x = PC1, y = PC2, color = factor(cluster)
 k_means_plot_pca
 ```
 
-TEST c2: k-means clustering on 3 dimensions
+f. Same PCA + k-means, but in 3D this time
+
 ```{r}
 
 # Perform k-means clustering using 3 PCs
@@ -335,8 +314,7 @@ k_means_plot_3d
 
 ```
 
-
-d. DESeq2 comparing both groups
+g. DESeq2 comparing both groups
 
 ```{r supervised DESeq and volcano}
 # Re-name the clusters to 0/1
@@ -383,7 +361,7 @@ volc <- EnhancedVolcano(res.df.human,
 volc
 ```
 
-e. Perform biological process enrichment on these up/down-regulated genes
+h. Perform biological process enrichment on these up/down-regulated genes
 
 ```{r enrichment}
 
@@ -408,7 +386,7 @@ enrichment <- function(res.df, padj_thres, log2fc_thres, up.or.down, save = FALS
   print(head(GO_results_df$p.adjust))
   
   # Create plot using the enrichResult object (GO_results)
-  fit.up <- barplot(GO_results, showCategory = 10) +
+  fit.up <- barplot(GO_results, showCategory = 100) +
     xlab("Number of Genes") + 
     ggtitle(title) + 
     theme(
@@ -452,8 +430,8 @@ df_no_human <- rpmdata[, !colnames(rpmdata) %in% "Homo sapiens"]
 total_rpm <- rowSums(df_no_human)
 
 # Normalize dataframe back to RPM
-df_renormalized <- sweep(df_no_human, 1, total_rpm, "/") * 1e6
-df_renormalized[is.nan(df_renormalized)] <- 0
+df_renormalized <- as.data.frame(sweep(df_no_human, 1, total_rpm, "/") * 1e6)
+df_renormalized[is.na(df_renormalized)] <- 0
 df_renormalized <- df_renormalized[patients.over.thres , ]
 
 # Seven common UTI-associated pathogens
@@ -610,6 +588,59 @@ pa_probs <- predict(pa, type = "response")
 auc_pa <- roc(log.reg.df$pa, pa_probs)
 print(auc_pa)
 plot(auc_pa, col = "blue", main = "ROC Curve for P. aeruginosa")
+```
+
+d. Create Bracken-based heatmaps showing species abundance across samples
+
+```{r bracken heatmaps}
+
+plot_filtered_rpm_heatmap <- function(rpm_df, abundance_threshold = 1, log_transform = TRUE, cluster_rows = TRUE, cluster_columns = TRUE, top_n_species = NULL) {
+  # Check input
+  if (!is.data.frame(rpm_df)) stop("Input must be a data frame.")
+  
+  # Remove any non-numeric columns (e.g., metadata)
+  rpm_mat <- rpm_df %>% dplyr::select(where(is.numeric)) %>% as.matrix()
+  rownames(rpm_mat) <- rownames(rpm_df)
+
+  # Filter species (columns) based on abundance threshold in any sample
+  # Threshold is in percent — so convert to raw RPM
+  filtered_mat <- rpm_mat[ , apply(rpm_mat, 2, function(col) any(col > abundance_threshold)), drop = FALSE]
+
+  # Optional: keep only top N most variable species
+  if (!is.null(top_n_species)) {
+    species_var <- apply(filtered_mat, 2, var)
+    top_species <- names(sort(species_var, decreasing = TRUE))[1:min(top_n_species, length(species_var))]
+    filtered_mat <- filtered_mat[, top_species, drop = FALSE]
+  }
+
+  # Log-transform to reduce skew (optional)
+  if (log_transform) {
+    filtered_mat <- log10(filtered_mat + 1)  # add 1 to avoid log(0)
+  }
+
+  # Heatmap color scale
+  col_fun <- colorRamp2(c(min(filtered_mat), max(filtered_mat)), c("white", "red"))
+
+  # Plot heatmap
+  Heatmap(filtered_mat,
+          name = "RPM",
+          col = col_fun,
+          show_row_names = FALSE,
+          show_column_names = TRUE,
+          cluster_rows = cluster_rows,
+          cluster_columns = cluster_columns,
+          row_title = "214 Patients",
+          column_title = "Bracken Output Including Human",
+          column_names_gp = grid::gpar(fontsize = 4),
+          heatmap_legend_param = list(title = ifelse(log_transform, "log10(RPM+1)", "RPM")))
+}
+
+without_human <- plot_filtered_rpm_heatmap(data.frame(df_renormalized), abundance_threshold = 10000)
+with_human <- plot_filtered_rpm_heatmap(data.frame(rpmdata), abundance_threshold = 500)
+
+print(with_human)
+print(without_human)
+
 ```
 
 ## 3. How well does host-response and pathogen abundance overlap?
@@ -831,7 +862,6 @@ print(TNF$jitter)
 print(HLAA$jitter)
 ```
 
-
 ## 4. How well does RNA-seq agree with clinical UTI diagnostics?
 
 a. Comparing with clinical: venn diagrams proportional to sizes of groups
@@ -895,7 +925,7 @@ plot(rnaseq_venn,
      labels = FALSE,
      edges = list(col = "black", lwd = 2),  
      legend = TRUE, 
-     quantities.cex = 10)  # Increase text size
+     quantities.cex = 10) 
 
 
 # Plot clinical host response versus pathogen abundance
@@ -973,9 +1003,39 @@ venn_plot2 <- ggvenn(sets2,
 venn_plot2
 ```
 
-c. ROC and AUC: using pathogen abundance scores to predict clinical labels
+c. Comparing with clinical: comparing absolute positives and absolute negatives of RNA-seq versus clinical
 
-```{r roc to predict clinical labels}
+```{r new venn diagram groupings}
+
+rnaseq_positives <- rownames(venn.df[venn.df$`RNA-Seq Host Response Cluster` == venn.df$`RNA-Seq Pathogen Abundance` &  venn.df$`RNA-Seq Host Response Cluster` == 1, ])
+rnaseq_negatives <- rownames(venn.df[venn.df$`RNA-Seq Host Response Cluster` == venn.df$`RNA-Seq Pathogen Abundance` &  venn.df$`RNA-Seq Host Response Cluster` == 0, ])
+
+clinical_positives <- rownames(venn.df[venn.df$`Clinical Host Response Score` == venn.df$`Clinical Pathogen Abundance` &  venn.df$`Clinical Host Response Score` == 1, ])
+clinical_negatives <- rownames(venn.df[venn.df$`Clinical Host Response Score` == venn.df$`Clinical Pathogen Abundance` &  venn.df$`Clinical Host Response Score` == 0, ])
+
+all_patients <- unique(c(clinical_negatives, clinical_positives, rnaseq_positives, rnaseq_negatives))
+
+patient_df <- data.frame(
+  patient_id = all_patients,
+  clinical = ifelse(all_patients %in% clinical_positives, "clinical positive", "clinical negative"),
+  rnaseq = ifelse(all_patients %in% rnaseq_positives, "RNA-seq positive", "RNA-seq negative")
+)
+table(patient_df$clinical, patient_df$rnaseq)
+
+venn_sets <- list(
+  Clinical_Pos = clinical_positives,
+  Clinical_Neg = clinical_negatives,
+  RNAseq_Pos = rnaseq_positives,
+  RNAseq_Neg = rnaseq_negatives
+)
+
+fit <- euler(venn_sets)
+plot(fit, fills = c("#1b9e77", "#d95f02", "#7570b3", "#e7298a"), labels = TRUE, quantities = TRUE)
+```
+
+d. ROC and AUC: using pathogen abundance scores to predict clinical labels
+
+```{r roc 2 to predict clinical labels}
 
 # Predicting clinical host response
 par(pty = "s")
@@ -993,7 +1053,62 @@ print(auc_regression_3)
 plot(auc_regression_3, col = "blue", main = "Pathogen Abundance Score Predicts Clinical Pathogen", lwd = 3)
 ```
 
-d. Exploring the patients that do not agree
+e. ROC and AUC: using representative host response gene and pathogen scores to predict clinical labels
+
+```{r roc to predict clinical labels}
+#' Goal: Find centroid gene in k-means cluster 1 that is closest to the average expression
+#' profile of all genes
+cluster_1_patients <- rownames(venn.df[venn.df$`RNA-Seq Host Response Cluster` == 1 , ])
+cluster_1_TPM <- txi.data$abundance[ , cluster_1_patients]
+
+centroid <- colMeans(cluster_1_TPM)
+distances <- apply(cluster_1_TPM, 1, function(gene_expr) {
+  sqrt(sum((gene_expr - centroid)^2))
+})
+
+# 3. Find the gene with the smallest distance to the centroid
+closest_gene <- names(which.min(distances))
+
+# 4. Extract the expression profile of that gene (optional)
+closest_gene_profile <- txi.data$abundance["ENSG00000119535", ]
+closest_gene_profile <- closest_gene_profile[order(names(closest_gene_profile))]
+closest_gene_profile <- closest_gene_profile[names(closest_gene_profile) != "20070"]
+length(closest_gene_profile)
+
+# Predicting clinical host response
+par(pty = "s")
+regression_4 <- glm(venn.df$`Clinical Host Response Score` ~ closest_gene_profile, data = data.frame(`Clinical Host Response Score` = venn.df$`Clinical Host Response Score`, closest_gene_profile), family = binomial)
+regression_4_probs <- predict(regression_4, type = "response")
+auc_regression_4 <- roc(venn.df$`Clinical Host Response Score`, regression_4_probs)
+print(auc_regression_4)
+plot(auc_regression_4, col = "blue", main = "CSF3R Expression Predicts Clinical Host Response", lwd = 3)
+
+
+# Predicting clinical taxonomy
+regression_5 <- glm(venn.df$`Clinical Pathogen Abundance` ~ closest_gene_profile, data = data.frame(`Clinical Pathogen Abundance` = venn.df$`Clinical Pathogen Abundance`, closest_gene_profile), family = binomial)
+regression_5_probs <- predict(regression_5, type = "response")
+auc_regression_5 <- roc(venn.df$`Clinical Pathogen Abundance`, regression_5_probs)
+print(auc_regression_5)
+plot(auc_regression_5, col = "blue", main = "CSF3R Expression Predicts Clinical Pathogen", lwd = 3)
+
+# Predicting RNA-seq host response
+par(pty = "s")
+regression_6 <- glm(venn.df$`RNA-Seq Host Response Cluster` ~ closest_gene_profile, data = data.frame(`RNA-Seq Host Response Cluster` = venn.df$`RNA-Seq Host Response Cluster`, closest_gene_profile), family = binomial)
+regression_6_probs <- predict(regression_6, type = "response")
+auc_regression_6 <- roc(venn.df$`RNA-Seq Host Response Cluster`, regression_6_probs)
+print(auc_regression_6)
+plot(auc_regression_6, col = "blue", main = "CSF3R Expression Predicts RNA-seq Host Response", lwd = 3)
+
+
+# Predicting RNA-seq taxonomy
+regression_7 <- glm(venn.df$`RNA-Seq Pathogen Abundance` ~ closest_gene_profile, data = data.frame(`RNA-Seq Pathogen Abundance` = venn.df$`RNA-Seq Pathogen Abundance`, closest_gene_profile), family = binomial)
+regression_7_probs <- predict(regression_5, type = "response")
+auc_regression_7 <- roc(venn.df$`RNA-Seq Pathogen Abundance`, regression_7_probs)
+print(auc_regression_7)
+plot(auc_regression_7, col = "blue", main = "CSF3R Expression Predicts RNA-seq Pathogen", lwd = 3)
+```
+
+f. Exploring the patients that do not agree
 
 ```{r urobiome analysis}
 
@@ -1156,7 +1271,7 @@ print(main_plot)
 ## STILL NEED TO ADD THE LEGEND!!
 ```
 
-e. Colour host-response PCA with clinically-determined culture-based results
+g. Colour host-response PCA with clinically-determined culture-based results
 
 ```{r pca + mainpathogen}
 # First ensure we keep all samples, including those with NA for mainpathogen
@@ -1279,7 +1394,7 @@ k_means_plot_3d
 
 ```
 
-f. Colour host-response PCA with labels from venn diagram
+h. Colour host-response PCA with labels from venn diagram
 
 ```{r venn diagram pca colour mapping}
 set.seed(1234)
@@ -1371,7 +1486,7 @@ pca_plot_4f_3d <- plot_ly(
 pca_plot_4f_3d
 ```
 
-g. Take these 8 MT_HR_Negative patients, and compare leukocyte esterase/pathogen score with the all positive group
+i. Take these 8 MT_HR_Negative patients, and compare leukocyte esterase/pathogen score with the all positive group
 
 ```{r LE activity between groups}
 
@@ -1413,7 +1528,7 @@ print(comp_2)
 
 ```
 
-g. Cell type enrichment with xCell, mapping on all four prediction types
+j. Cell type enrichment with xCell, mapping on all four prediction types
 
 ```{r cell type enrichment}
 xCell_txi <- txi.data$abundance
@@ -1464,10 +1579,3 @@ xcell_heatmap <- Heatmap(
 # Draw the heatmap
 print(xcell_heatmap)
 ```
-
-h. Compare E. coli abundance across positive patients
-
-```{r cell type enrichment}
-
-```
-

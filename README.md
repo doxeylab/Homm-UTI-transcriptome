@@ -1,9 +1,9 @@
 # Code and biostatistical analysis from Homm et al.
 - Data
 	- /data/uti.html: downloadable web document with R code and plots.
-	- /data/reads.meta.counts.RData: FILL
-	- /data/rpmdata.RData: FILL
-	- /data/txi.data.RData: FILL
+	- /data/reads.meta.counts.239.RData: Contains RPM data for all species across 239 patients, along with corresponding metadata
+	- /data/rpmdata.239.RData: Contains just RPM taxonomic data for all species
+	- /data/txi.data.239.RData: Contains txi object with all Salmon-mapped human gene expression levels
 - Scripts
 	- /scripts/uti.RMarkdown: all statistical analyses done in R
 	- /scripts/salmon.sh: script used to run Salmon
