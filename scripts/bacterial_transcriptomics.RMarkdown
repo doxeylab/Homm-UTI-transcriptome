@@ -1,0 +1,89 @@
+---
+title: "Homm et al. -> Bacterial transcriptomics analysis
+author: "Max Homm"
+date: "`r Sys.Date()`"
+output: html_document
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Overview
+
+Turning Salmon-derived bacterial transcriptomic data into DESeq2 objects. 
+
+## Loading Packages
+
+```{r package loading}
+library(tximport)
+library(Biostrings)
+library(stringr)
+```
+
+## Format data
+
+### Functions to format data
+
+```{r functions to format data}
+
+# Create tx2gene object
+create.tx2gene <- function(filepath) {
+  #'
+  #' 'filepath' points to the cds file for a given pathogen
+  #'
+  id_file <- readDNAStringSet(filepath)
+  seq_name = names(id_file)
+  df <- data.frame(entry = seq_name, stringsAsFactors = FALSE)
+  df$transcript_id <- str_extract(df$entry, "(lcl\\|[^ ]+)")
+  df$locus_id <- str_extract(df$entry, "(?<=\\[locus_tag=)[^\\]]+")
+  df$gene_id
+  df$protein_id <- str_extract(df$entry, "(?<=\\[protein_id=)[^\\]]+")
+  df$protein_name <- str_extract(df$entry, "(?<=\\[protein=)[^\\]]+")
+  df <- df[, c("transcript_id", "locus_id", "protein_id", "protein_name")]
+  return(df)
+}
+
+# Generate the txi objects
+generate.txi <- function(filepath, tx2gene) {
+  #'
+  #' 'filepath' points to the location of the salmon output files
+  #' 'tx2gene' is the object produced after running create.tx2gene function
+  #'
+  quant.files <- list.files(filepath, pattern = "quant.sf$", recursive = TRUE, full.names = TRUE)
+  sample.names <- sapply(quant.files, function(x) strsplit(x, "/")[[1]][10])
+  sample.names <- sapply(sample.names, function(x) strsplit(x, "_")[[1]][1])
+  names(quant.files) <- sample.names
+  txi <- tximport(quant.files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = FALSE)
+  return(txi)
+}
+
+
+```
+
+### Run these functions on desired pathogens
+
+```{r run functions per pathogen}
+
+# Path for each coding sequence
+kpn_cds <- "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/kn/cds/ncbi_dataset/data/GCF_000240185.1/cds_from_genomic.fna"
+efs_cds <- "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/ef/cds/ncbi_dataset/data/GCF_000393015.1/cds_from_genomic.fna"
+pms_cds <- "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pm/cds/ncbi_dataset/data/GCF_000069965.1/cds_from_genomic.fna"
+paa_cds <- "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pa/cds/ncbi_dataset/data/GCF_000006765.1/cds_from_genomic.fna"
+
+# Create tx2gene for each pathogen
+kpn_tx2gene <- create.tx2gene(kpn_cds)
+efs_tx2gene <- create.tx2gene(efs_cds)
+pms_tx2gene <- create.tx2gene(pms_cds)
+paa_tx2gene <- create.tx2gene(paa_cds)
+
+# Create txi object for each pathogen
+kpn_txi <- generate.txi("/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/kn/salmon_output/Klebsiella_pneumoniae", kpn_tx2gene)
+View(kpn_txi$abundance)
+
+efs_txi <- generate.txi("/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/ef/salmon_output/Enterococcus_faecalis", efs_tx2gene)
+pms_txi <- generate.txi("/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pm/salmon_output/Proteus_mirabilis", pms_tx2gene)
+paa_txi <- generate.txi("/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pa/salmon_output/Pseudomonas aeruginosa", paa_tx2gene)
+
+```
+

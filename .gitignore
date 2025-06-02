@@ -1,2 +1,5 @@
 /misc/
+/data/
 /data/txi.data.239.RData
+*.RData
+.Rproj.user

@@ -46,6 +46,7 @@ library(devtools)
 library(xCell)
 library(circlize)
 library(plotly)
+library(showtext)
 
 # List of your packages
 pkgs <- c(
@@ -84,6 +85,17 @@ load("../data/txi.data.239.RData")
 
 #' Contains just RPM data for all species
 load("../data/rpmdata.239.RData")
+
+# Temporary: test out for bracken instead
+load("../data/bracken_rpm_496.RData")
+good.patients <- reads.meta.counts.239$ptid
+rpmdata.239 <- bracken_rpm_496[as.character(good.patients) , ] 
+print(dim(rpmdata.239))
+
+# Incorporate this better, but these patients had dirty tubes (hence should be removed)
+patients.to.remove <- c("15887", "15963", "15985", "15991", "15994", "16003", 
+                        "16050", "15860", "15900", "15906", "15927", "16018", 
+                        "16089")
 ```
 
 
@@ -96,6 +108,9 @@ a. Filter out patients with <= 5000 human genes, and genes with mean count < 1, 
 human.gene.counts <- apply(txi.data.239$counts, 2, function(x) sum(x != 0))
 human.gene.over.thres <- subset(human.gene.counts, human.gene.counts > 5000)
 human.gene.over.thres <- human.gene.over.thres[na.omit(names(human.gene.over.thres))]
+
+# Remove the dirty patient tubes
+human.gene.over.thres <- human.gene.over.thres[!names(human.gene.over.thres) %in% patients.to.remove]
 
 # Subset txi.data to only include these patients
 txi.data.239$abundance <- subset(txi.data.239$abundance, select = c(names(human.gene.over.thres)))
@@ -129,7 +144,7 @@ b. Proportion of human and non-human reads across the patients
 
 # Obtain reads data
 reads <- reads.meta.counts$total.reads
-human.reads <- reads.meta.counts$total.reads * (rpmdata$`Homo sapiens` / 1000000)
+human.reads <- reads.meta.counts$human.reads
 data <- data.frame(
   patient = 1:length(human.reads),
   non_human_reads = reads - human.reads,
@@ -249,7 +264,7 @@ k_means_plot_pca <- ggplot(pca_df, aes(x = PC1, y = PC2, color = factor(cluster)
   stat_ellipse(aes(fill = factor(cluster)),   geom = "polygon",
   alpha = 0.3,
   color = "black",    # outline to make visible
-  level = 0.95,
+  level = 0.99,
   show.legend = TRUE) +
   labs(
     title = "PCA Plot with K-means Clusters (k = 2)",
@@ -311,6 +326,16 @@ k_means_plot_3d <- plot_ly(
 
 # Display the plot
 k_means_plot_3d
+
+# library(reticulate)
+# 
+# save_image(
+#   k_means_plot_3d,
+#   file   = "3D_test.jpeg",
+#   width  = 3600,     # px
+#   height = 2400,     # px
+#   scale  = 1         # no additional scaling
+# )
 
 ```
 
@@ -386,7 +411,7 @@ enrichment <- function(res.df, padj_thres, log2fc_thres, up.or.down, save = FALS
   print(head(GO_results_df$p.adjust))
   
   # Create plot using the enrichResult object (GO_results)
-  fit.up <- barplot(GO_results, showCategory = 100) +
+  fit.up <- barplot(GO_results, showCategory = 10) +
     xlab("Number of Genes") + 
     ggtitle(title) + 
     theme(
@@ -418,6 +443,9 @@ enrichment <- function(res.df, padj_thres, log2fc_thres, up.or.down, save = FALS
 # Run enrichment function on up/down-regulated genes
 upreg.plot <- enrichment(res.df.human, 0.05, 1, "up", save = FALSE)
 downreg.plot <- enrichment(res.df.human, 0.05, 1, "down", save = FALSE)
+
+print(upreg.plot)
+print(downreg.plot)
 ```
 
 ## 2. Kraken2 and Bracken-based taxonomic classification
@@ -446,11 +474,30 @@ rpm_sums <- rpm_sums[patients.over.thres]
 # Logs the final summation of normalized pathogen abundance
 rpm_sums <- sapply(rpm_sums, function(x) max(0, log10(x)))
 
-# Run jenks classification algorithm to find optimal threshold
-pathogen_abundance = rpm_sums
-breaks <- classIntervals(pathogen_abundance, n=2, style="jenks")
-threshold <- max(breaks$brks[-length(breaks$brks)])
-print(paste0("Threshold = ", threshold))
+# # Look at k-means clustering of rpm_sums
+# km <- kmeans(10^rpm_sums, centers = 2)
+# centers <- sort(km$centers)
+# threshold <- mean(centers)
+# cat("K-means threshold =", threshold, "\n")
+
+# # Run jenks classification algorithm to find optimal threshold
+# pathogen_abundance = rpm_sums
+# breaks <- classIntervals(pathogen_abundance, n=2, style="jenks")
+# threshold <- max(breaks$brks[-length(breaks$brks)])
+# print(paste0("Threshold = ", threshold))
+
+# Look at kernel density and find derivatives
+d <- density(rpm_sums)
+x_vals <- d$x
+y_vals <- d$y
+minima_idx <- which(diff(sign(diff(y_vals))) == 2) + 1
+minima_x <- x_vals[minima_idx]
+minima_y <- y_vals[minima_idx]
+print(minima_x)
+plot(d, main = "Density of rpm_sums with local minima")
+points(minima_x, minima_y, col = "red", pch = 19)
+abline(v = minima_x, col = "red", lty = 2)
+threshold <- minima_x[2]
 
 # View dist of these abundance scores
 hist(rpm_sums, breaks = 12, main = title("Logged RPM, Human Reads Excluded"))
@@ -459,6 +506,7 @@ abline(v = threshold, col = "red", lty = 2, lwd = 2)
 # View pathogen abundance scores across random y-axis
 
 set.seed(1234)
+set.seed(123)
 
 # Create a data frame with random y-values
 abundance.df <- data.frame(
@@ -545,6 +593,18 @@ auc_ecoli <- roc(log.reg.df$ecoli, ecoli_probs)
 print(auc_ecoli)
 plot(auc_ecoli, col = "blue", main = "ROC Curve for E. coli")
 
+# Extract optimal information
+optimal_threshold <- coords(auc_ecoli, "best", ret = "threshold")[1]
+predicted_classes <- ifelse(ecoli_probs >= optimal_threshold, 1, 0)
+predicted_classes <- sapply(X = ecoli_probs, function(x) ifelse(x >= optimal_threshold, 1, 0))
+print(predicted_classes)
+conf_matrix <- table(Predicted = predicted_classes, Actual = log.reg.df$ecoli)
+print(conf_matrix)
+
+# Extract the optimal threshold from the ROC curve
+optimal_threshold_info <- coords(auc_ecoli, "best", ret = c("threshold", "sensitivity", "specificity"))
+print(optimal_threshold_info)
+
 # Kleb
 
 log.reg.df$kleb <- ifelse(reads.meta.counts$klebsiella == 1, 1, 0)  
@@ -555,6 +615,18 @@ kleb_probs <- predict(kleb, type = "response")
 auc_kleb <- roc(log.reg.df$kleb, kleb_probs)
 print(auc_kleb)
 plot(auc_kleb, col = "blue", main = "ROC Curve for K. pneumoniae")
+
+# Extract optimal information
+optimal_threshold <- coords(auc_kleb, "best", ret = "threshold")[1]
+predicted_classes <- ifelse(kleb_probs >= optimal_threshold, 1, 0)
+predicted_classes <- sapply(X = kleb_probs, function(x) ifelse(x >= optimal_threshold, 1, 0))
+print(predicted_classes)
+conf_matrix <- table(Predicted = predicted_classes, Actual = log.reg.df$kleb)
+print(conf_matrix)
+
+# Extract the optimal threshold from the ROC curve
+optimal_threshold_info <- coords(auc_kleb, "best", ret = c("threshold", "sensitivity", "specificity"))
+print(optimal_threshold_info)
 
 # EC
 
@@ -567,6 +639,18 @@ auc_ec <- roc(log.reg.df$ec, ec_probs)
 print(auc_ec)
 plot(auc_ec, col = "blue", main = "ROC Curve for E. faecalis")
 
+# Extract optimal information
+optimal_threshold <- coords(auc_ec, "best", ret = "threshold")[1]
+predicted_classes <- ifelse(ec_probs >= optimal_threshold, 1, 0)
+predicted_classes <- sapply(X = ec_probs, function(x) ifelse(x >= optimal_threshold, 1, 0))
+print(predicted_classes)
+conf_matrix <- table(Predicted = predicted_classes, Actual = log.reg.df$ec)
+print(conf_matrix)
+
+# Extract the optimal threshold from the ROC curve
+optimal_threshold_info <- coords(auc_ec, "best", ret = c("threshold", "sensitivity", "specificity"))
+print(optimal_threshold_info)
+
 # Proteus
 
 log.reg.df$prot <- ifelse(reads.meta.counts$proteus == 1, 1, 0)  
@@ -578,6 +662,18 @@ auc_prot <- roc(log.reg.df$prot, prot_probs)
 print(auc_prot)
 plot(auc_prot, col = "blue", main = "ROC Curve for P. mirabilis")
 
+# Extract optimal information
+optimal_threshold <- coords(auc_prot, "best", ret = "threshold")[1]
+predicted_classes <- ifelse(prot_probs >= optimal_threshold, 1, 0)
+predicted_classes <- sapply(X = prot_probs, function(x) ifelse(x >= optimal_threshold, 1, 0))
+print(predicted_classes)
+conf_matrix <- table(Predicted = predicted_classes, Actual = log.reg.df$prot)
+print(conf_matrix)
+
+# Extract the optimal threshold from the ROC curve
+optimal_threshold_info <- coords(auc_prot, "best", ret = c("threshold", "sensitivity", "specificity"))
+print(optimal_threshold_info)
+
 # P. aeruginosa
 
 log.reg.df$pa <- ifelse(reads.meta.counts$mainpathogen == "Pseudomonas Aeruginosa", 1, 0)  
@@ -588,6 +684,18 @@ pa_probs <- predict(pa, type = "response")
 auc_pa <- roc(log.reg.df$pa, pa_probs)
 print(auc_pa)
 plot(auc_pa, col = "blue", main = "ROC Curve for P. aeruginosa")
+
+# Extract optimal information
+optimal_threshold <- coords(auc_pa, "best", ret = "threshold")[1]
+predicted_classes <- ifelse(pa_probs >= optimal_threshold, 1, 0)
+predicted_classes <- sapply(X = pa_probs, function(x) ifelse(x >= optimal_threshold, 1, 0))
+print(predicted_classes)
+conf_matrix <- table(Predicted = predicted_classes, Actual = log.reg.df$pa)
+print(conf_matrix)
+
+# Extract the optimal threshold from the ROC curve
+optimal_threshold_info <- coords(auc_pa, "best", ret = c("threshold", "sensitivity", "specificity"))
+print(optimal_threshold_info)
 ```
 
 d. Create Bracken-based heatmaps showing species abundance across samples
@@ -630,7 +738,7 @@ plot_filtered_rpm_heatmap <- function(rpm_df, abundance_threshold = 1, log_trans
           cluster_rows = cluster_rows,
           cluster_columns = cluster_columns,
           row_title = "214 Patients",
-          column_title = "Bracken Output Including Human",
+          column_title = "Bracken Output Excluding Human",
           column_names_gp = grid::gpar(fontsize = 4),
           heatmap_legend_param = list(title = ifelse(log_transform, "log10(RPM+1)", "RPM")))
 }
@@ -687,6 +795,13 @@ col_anno <- HeatmapAnnotation(
   annotation_name_rot = 0
 )
 
+# # Same thing, but remove side and top annotations for the figure
+# col_anno <- HeatmapAnnotation(
+#   `Unlogged Pathogen\nAbundance Score` = anno_barplot(10^rpm_sums_to_use, gp = gpar(fill = "gray")),
+#   annotation_name_gp = gpar(fontsize = 8, fontface = "bold"),
+#   annotation_name_rot = 0
+# )
+
 # Side annotation
 
 # Do this for binary now to help for the row annotation
@@ -698,7 +813,7 @@ names(binary.combined) <- sig.genes.heatmap
 row_anno <- rowAnnotation(
   `Gene Expression` = binary.combined, 
   col = list(`Gene Expression` = c("2" = "blue", "1" = "red")),
-  annotation_name_gp = gpar(fontsize = 10, fontface = "bold"),
+  annotation_name_gp = gpar(fontsize = 8, fontface = "bold"),
   annotation_name_rot = 0, 
   annotation_name_offset = unit(2, "mm")
 )
@@ -710,7 +825,7 @@ gene.heatmap <- Heatmap(
   show_row_names = FALSE, 
   column_order = ordered_k_groups_name,
   top_annotation = col_anno,
-  right_annotation = row_anno, 
+  # right_annotation = row_anno, 
   heatmap_legend_param = list(
     title = "Z-score\ngene expression",
     labels_gp = gpar(fontsize = 10), 
@@ -1008,10 +1123,10 @@ c. Comparing with clinical: comparing absolute positives and absolute negatives 
 ```{r new venn diagram groupings}
 
 rnaseq_positives <- rownames(venn.df[venn.df$`RNA-Seq Host Response Cluster` == venn.df$`RNA-Seq Pathogen Abundance` &  venn.df$`RNA-Seq Host Response Cluster` == 1, ])
-rnaseq_negatives <- rownames(venn.df[venn.df$`RNA-Seq Host Response Cluster` == venn.df$`RNA-Seq Pathogen Abundance` &  venn.df$`RNA-Seq Host Response Cluster` == 0, ])
+rnaseq_negatives <- setdiff(rownames(venn.df), rnaseq_positives)
 
 clinical_positives <- rownames(venn.df[venn.df$`Clinical Host Response Score` == venn.df$`Clinical Pathogen Abundance` &  venn.df$`Clinical Host Response Score` == 1, ])
-clinical_negatives <- rownames(venn.df[venn.df$`Clinical Host Response Score` == venn.df$`Clinical Pathogen Abundance` &  venn.df$`Clinical Host Response Score` == 0, ])
+clinical_negatives <- setdiff(rownames(venn.df), clinical_positives)
 
 all_patients <- unique(c(clinical_negatives, clinical_positives, rnaseq_positives, rnaseq_negatives))
 
@@ -1030,7 +1145,7 @@ venn_sets <- list(
 )
 
 fit <- euler(venn_sets)
-plot(fit, fills = c("#1b9e77", "#d95f02", "#7570b3", "#e7298a"), labels = TRUE, quantities = TRUE)
+# plot(fit, fills = c("#1b9e77", "#d95f02", "#7570b3", "#e7298a"), labels = TRUE, quantities = TRUE)
 ```
 
 d. ROC and AUC: using pathogen abundance scores to predict clinical labels
@@ -1051,6 +1166,37 @@ regression_3_probs <- predict(regression_3, type = "response")
 auc_regression_3 <- roc(venn.df$`Clinical Pathogen Abundance`, regression_3_probs)
 print(auc_regression_3)
 plot(auc_regression_3, col = "blue", main = "Pathogen Abundance Score Predicts Clinical Pathogen", lwd = 3)
+
+# Extract optimal information
+optimal_threshold <- coords(auc_regression_3, "best", ret = "threshold")[1]
+predicted_classes <- ifelse(regression_3_probs >= optimal_threshold, 1, 0)
+predicted_classes <- sapply(X = regression_3_probs, function(x) ifelse(x >= optimal_threshold, 1, 0))
+print(predicted_classes)
+conf_matrix <- table(Predicted = predicted_classes, Actual = venn.df$`Clinical Pathogen Abundance`)
+print(conf_matrix)
+
+# Extract the optimal threshold from the ROC curve
+optimal_threshold_info <- coords(auc_regression_3, "best", ret = c("threshold", "sensitivity", "specificity"))
+print(optimal_threshold_info)
+
+# Clinical taxonomy
+regression_3 <- glm(reads.meta.counts$uti ~ rpm_sums, data = data.frame(`Clinical Pathogen Abundance` = reads.meta.counts$uti, rpm_sums), family = binomial)
+regression_3_probs <- predict(regression_3, type = "response")
+auc_regression_3 <- roc(reads.meta.counts$uti, regression_3_probs)
+print(auc_regression_3)
+plot(auc_regression_3, col = "blue", main = "Pathogen Abundance Score Predicts Clinical Pathogen", lwd = 3)
+
+# Extract optimal information
+optimal_threshold <- coords(auc_regression_3, "best", ret = "threshold")[1]
+predicted_classes <- ifelse(regression_3_probs >= optimal_threshold, 1, 0)
+predicted_classes <- sapply(X = regression_3_probs, function(x) ifelse(x >= optimal_threshold, 1, 0))
+print(predicted_classes)
+conf_matrix <- table(Predicted = predicted_classes, Actual = reads.meta.counts$uti)
+print(conf_matrix)
+
+# Extract the optimal threshold from the ROC curve
+optimal_threshold_info <- coords(auc_regression_3, "best", ret = c("threshold", "sensitivity", "specificity"))
+print(optimal_threshold_info)
 ```
 
 e. ROC and AUC: using representative host response gene and pathogen scores to predict clinical labels
@@ -1113,10 +1259,9 @@ f. Exploring the patients that do not agree
 ```{r urobiome analysis}
 
 pred.df <- venn.df
-
+ 
 provide.grouping <- function(MT_HR, MT_Tax, Clin_HR, Clin_Tax) {
   comb <- paste0(MT_HR, MT_Tax, Clin_HR, Clin_Tax)
-  
   # Define meaningful labels for each combination
   group_labels <- list(
     "1111" = "All_Positive",
@@ -1136,73 +1281,115 @@ provide.grouping <- function(MT_HR, MT_Tax, Clin_HR, Clin_Tax) {
     "0010" = "Only_Clin_HR_Positive",
     "0001" = "Only_Clin_Tax_Positive"
   )
-  
   # Return the appropriate label or NA if not found
   return(group_labels[[comb]])
 }
-
+ 
 # Apply function to all rows, giving a string value for each
 pred.df$group <- mapply(provide.grouping, 
                         pred.df[ , 1],
                         pred.df[ , 2],
                         pred.df[ , 3], 
                         pred.df[ , 4])
-
+ 
 # Working with df_renormalized, FYI
 incorrect_patients <- rownames(pred.df[pred.df$group != "All_Negative" &
                                        pred.df$group != "All_Positive", ])
-  
 df_renormalized_subset <- df_renormalized[incorrect_patients , ]
-
+ 
 # Function that will generate a urobiome plot on this new df
 generate.urobiome.plot.with.matrix <- function(rpm, patients, rpm.threshold, metadata) {
-  # These are required
   require(ggplot2)
   require(reshape2)
   require(cowplot)
   require(dplyr)
   require(RColorBrewer)
-  
-  # 1. Process microbiome data
+ 
+  # 1. Subset RPM matrix
   rpm.subsetted <- rpm[patients, ]
   
-  sum.above.thres <- function(patient) {
-    current.row <- rpm.subsetted[patient, ]
-    patients.above <- current.row[current.row >= rpm.threshold]
-    sum.rpm.above <- sum(patients.above)
-    sum.rpm.below <- 1e6 - sum.rpm.above
-    patients.above <- c(patients.above, "other" = sum.rpm.below)
-    
-    if (sum(patients.above) != 1e6) stop("RPM must sum to 1 million!")
-    patients.above <- patients.above[!names(patients.above) %in% "Homo sapiens"]
-    return(patients.above / sum(patients.above))
+  # 2. Re-make the function but inputting
+  sum.above.thres <- function(rpm.df, rpm.threshold = 1000) {
+  
+    # Initialize list to store results
+    result_list <- list()
+  
+    for (i in seq_len(nrow(rpm.df))) {
+      patient_name <- rownames(rpm.df)[i]
+      current.row <- rpm.df[i, ]
+  
+      # Keep taxa above threshold
+      patients.above <- unlist(current.row)[unlist(current.row) >= rpm.threshold]
+      sum.rpm.above <- sum(patients.above)
+      sum.rpm.below <- 1e6 - sum.rpm.above
+  
+      # Add "other" category
+      patients.above <- c(patients.above, "other" = sum.rpm.below)
+  
+      # Safety check
+      if (abs(sum(patients.above) - 1e6) > 1) stop("RPM must sum to 1 million!")
+  
+      # Normalize to proportions
+      patients.above <- patients.above / sum(patients.above)
+  
+      # Store as a data frame row
+      result_list[[patient_name]] <- as.data.frame(t(patients.above), check.names = FALSE)
+    }
+  
+    # Combine all rows into a single data frame
+    result_df <- bind_rows(result_list, .id = "patient")
+    return(result_df)
   }
   
-  stacked_bar_data <- lapply(patients, sum.above.thres)
-  names(stacked_bar_data) <- patients
+  stacked_bar_data <- sum.above.thres(rpm, rpm.threshold = rpm.threshold)
   
-  # 2. Create plotting data
-  plot_data <- bind_rows(lapply(seq_along(stacked_bar_data), function(i) {
-    data.frame(t(stacked_bar_data[[i]]), Patient = patients[i], stringsAsFactors = FALSE)
-  })) %>% 
-    reshape2::melt(id.vars = "Patient", variable.name = "Taxa", value.name = "Abundance") %>% 
-    mutate(Patient = factor(Patient, levels = patients))
+  # 3. Melt into long dataframe for plotting
+  # stacked_bar_data <- stacked_bar_data %>%
+  #   rename_with(~ "Patient", .cols = "patient")  # rename 'patient' column to 'Patient'
   
-  # 3. Create color palette
-  taxa_list <- setdiff(unique(plot_data$Taxa), "other")
+  plot_data <- stacked_bar_data %>%
+    rename_with(~ "Patient", .cols = "patient") %>%
+    reshape2::melt(id.vars = "Patient", variable.name = "Taxa", value.name = "Abundance") %>%
+    filter(!is.na(Abundance)) %>%
+    group_by(Patient) %>%
+    mutate(Abundance = Abundance / sum(Abundance)) %>%
+    ungroup()
+    
+  temp_pred_df <- pred.df
+  temp_pred_df$Patient <- rownames(temp_pred_df)
+    
+  plot_data <- plot_data %>%
+    left_join(temp_pred_df, by = "Patient")
+  
+  # Reorder by pred.df$group
+  patient_order <- order(plot_data$group)
+  plot_data <- plot_data[patient_order , ]
+  
+  View(plot_data)
+  
+  # 4. Color setup - ensure we're using the actual taxa names
+  taxa_list <- setdiff(unique(as.character(plot_data$Taxa)), "other")
   other_colors <- colorRampPalette(brewer.pal(12, "Set3"))(length(taxa_list))
   fill_colours <- c("other" = "grey", setNames(other_colors, taxa_list))
   
-  # 4. Create main plot with its own legend
-  p_main <- ggplot(plot_data, aes(x = Patient, y = Abundance, fill = Taxa)) +
+  # 5. Main plot with full legend
+  p_main_full <- ggplot(plot_data, aes(x = Patient, y = Abundance, fill = Taxa)) +
     geom_bar(stat = "identity", width = 0.7) +
     coord_flip() +
-    scale_fill_manual(values = fill_colours) +
+    scale_fill_manual(values = fill_colours, name = "Taxa") +
     labs(x = "Patient", y = "Proportion of Non-Human Reads") +
     theme_minimal() +
     theme(axis.text.y = element_text(size = 8))
   
-  # 5. Create test matrix with colored symbols
+  # 6. Extract the legend before removing it
+  legend <- cowplot::get_legend(p_main_full + 
+                                theme(legend.position = "right",
+                                      legend.text = element_text(size = 8)))
+  
+  # 7. Remove legend from main plot
+  p_main <- p_main_full + theme(legend.position = "none")
+  
+  # 8. Test result matrix
   test_long_names <- c(
     "MT_HR" = "RNA-seq\nHost\nResponse",
     "MT_Tax" = "RNA-seq\nPathogen\nAbundance",
@@ -1217,46 +1404,44 @@ generate.urobiome.plot.with.matrix <- function(rpm, patients, rpm.threshold, met
     Clin_HR = pred.df[patients, "Clinical Host Response Score"],
     Clin_Tax = pred.df[patients, "Clinical Pathogen Abundance"],
     stringsAsFactors = FALSE
-  ) %>% 
+  ) %>%
     reshape2::melt(id.vars = "Patient", variable.name = "Test", value.name = "Status")
   
   p_matrix <- ggplot(test_results, aes(x = Test, y = Patient)) +
-    geom_text(aes(label = ifelse(Status == 1, "√", "X"), 
-                  color = ifelse(Status == 1, "Positive", "Negative")),
+    geom_text(aes(label = ifelse(Status == 1, "✓", "x"),
+                  color = factor(Status)), 
               size = 4) +
+    scale_color_manual(values = c("0" = "red", "1" = "darkgreen")) +
     scale_x_discrete(position = "top", labels = test_long_names) +
-    scale_color_manual(values = c("Positive" = "green4", "Negative" = "red")) +
     theme_minimal() +
     theme(
       axis.title = element_blank(),
       axis.text.y = element_blank(),
       panel.grid = element_blank(),
       axis.text.x = element_text(angle = 0, hjust = 0.5, size = 9),
-      legend.position = "right",
-      legend.title = element_blank()
+      legend.position = "none"
     )
   
-  # 6. Remove legends from both plots
-  p_main <- p_main + theme(legend.position = "none")
-  p_matrix <- p_matrix + theme(legend.position = "none")
-  
-  # 7. Combine plots without legends
-  aligned_plots <- align_plots(
-    p_main,
-    p_matrix,
-    align = "hv",
-    axis = "lr"
-  )
-  
-plot_grid(
-    aligned_plots[[1]],  # Main plot
-    aligned_plots[[2]],  # Matrix
+  # 9. Align and combine both plots
+  aligned_plots <- align_plots(p_main, p_matrix, align = "hv", axis = "lr")
+  main_matrix_plot <- plot_grid(
+    aligned_plots[[1]],
+    aligned_plots[[2]],
     nrow = 1,
     rel_widths = c(3, 3),
     align = "h",
     axis = "tb"
-)
+  )
+  
+  # 10. Return both combined plot and legend
+  return(list(
+    main_matrix_plot = main_matrix_plot,
+    legend = legend
+  ))
 }
+ 
+# So the checkmarks show up in the plot:
+showtext_auto()
 
 # Generate main plot without legend
 main_plot <- generate.urobiome.plot.with.matrix(
@@ -1265,10 +1450,13 @@ main_plot <- generate.urobiome.plot.with.matrix(
   75000,
   reads.meta.counts
 )
-
-print(main_plot)
-
-## STILL NEED TO ADD THE LEGEND!!
+ 
+# Print the main plot
+print(main_plot$main_matrix_plot)
+ 
+# Print the legend separately
+grid::grid.newpage()
+grid::grid.draw(main_plot$legend)
 ```
 
 g. Colour host-response PCA with clinically-determined culture-based results
@@ -1355,7 +1543,7 @@ pca_plot <- ggplot(pca_df, aes(x = PC1, y = PC2)) +
     panel.border = element_rect(color = "black", fill = NA, size = 1)
   )
 
-pca_plot
+print(pca_plot)
 
 ### Now create the same plot with 3D ###
 
@@ -1455,6 +1643,7 @@ stat_ellipse(
   )
 
 pca_plot_2
+print(pca_plot_2)
 
 ### Now create the same plot with 3D ###
 
@@ -1570,12 +1759,55 @@ xcell_heatmap <- Heatmap(
   top_annotation = ha,
   col = colorRamp2(c(-2, 0, 2), c("blue", "white", "red")),
   cluster_columns = FALSE,
-  column_names_gp = gpar(fontsize = 0),   # hide patient IDs
-  row_names_gp = gpar(fontsize = 8),      # smaller y-axis labels
-  name = "xCell score"                    # rename legend
+  column_names_gp = gpar(fontsize = 0), 
+  row_names_gp = gpar(fontsize = 8),   
+  name = "xCell score"                
 )
-
 
 # Draw the heatmap
 print(xcell_heatmap)
+```
+
+k. Compute AUC for all cell types across all groups
+
+```{r cell enrichment AUC}
+RNAseq_HR <- pred.df[ , 1]
+RNAseq_tax <- pred.df[ , 2]
+clin_HR <- pred.df[ , 3]
+clin_tax <- pred.df[ , 4]
+
+cell_enrichment_auc <- function(binary) { 
+  
+  # Prepare storage
+  auc_results <- numeric(nrow(xcell_results_scaled))
+  names(auc_results) <- rownames(xcell_results_scaled)
+  
+  # Loop through each cell type
+  for (i in seq_len(nrow(xcell_results_scaled))) {
+    predictor <- as.numeric(xcell_results_scaled[i, ])  # expression of one cell type across patients
+    response <- binary
+  
+    # Logistic regression model
+    model <- glm(response ~ predictor, family = binomial)
+    predicted_probs <- predict(model, type = "response")
+  
+    # Compute AUC
+    auc_results[i] <- auc(response, predicted_probs)
+  }
+  
+  return(auc_results)
+  
+}
+
+RNAseq_HR_auc <- cell_enrichment_auc(RNAseq_HR)
+RNAseq_tax_auc <- cell_enrichment_auc(RNAseq_tax)
+clin_HR_auc <- cell_enrichment_auc(clin_HR)
+clin_tax_auc <- cell_enrichment_auc(clin_tax)
+
+cell_enrichment_auc_df <- data.frame(RNAseq_HR_auc, 
+                                        RNAseq_tax_auc, 
+                                        clin_HR_auc, 
+                                        clin_tax_auc)
+colnames(cell_enrichment_auc_df) <- colnames(pred.df[ , c(1, 2, 3, 4)])
+
 ```
