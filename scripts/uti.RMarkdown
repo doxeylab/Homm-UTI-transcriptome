@@ -93,7 +93,7 @@ rpmdata.239 <- bracken_rpm_496[as.character(good.patients) , ]
 print(dim(rpmdata.239))
 
 # Incorporate this better, but these patients had dirty tubes (hence should be removed)
-patients.to.remove <- c("15887", "15963", "15985", "15991", "15994", "16003", 
+patients.to.remove <- c("10005", "10380", "15887", "15963", "15985", "15991", "15994", "16003", 
                         "16050", "15860", "15900", "15906", "15927", "16018", 
                         "16089")
 ```
@@ -674,16 +674,16 @@ print(conf_matrix)
 optimal_threshold_info <- coords(auc_prot, "best", ret = c("threshold", "sensitivity", "specificity"))
 print(optimal_threshold_info)
 
-# P. aeruginosa
+# P. aeruginosa -> removing those patients actually gets rid of all PA species
 
-log.reg.df$pa <- ifelse(reads.meta.counts$mainpathogen == "Pseudomonas Aeruginosa", 1, 0)  
-log.reg.df$pa[is.na(log.reg.df$pa)] <- 0  
-
-pa <- glm(pa ~ Pseudomonas.aeruginosa, data = log.reg.df, family = binomial)  
-pa_probs <- predict(pa, type = "response")
-auc_pa <- roc(log.reg.df$pa, pa_probs)
-print(auc_pa)
-plot(auc_pa, col = "blue", main = "ROC Curve for P. aeruginosa")
+# log.reg.df$pa <- ifelse(reads.meta.counts$mainpathogen == "Pseudomonas Aeruginosa", 1, 0)  
+# log.reg.df$pa[is.na(log.reg.df$pa)] <- 0  
+# 
+# pa <- glm(pa ~ Pseudomonas.aeruginosa, data = log.reg.df, family = binomial)  
+# pa_probs <- predict(pa, type = "response")
+# auc_pa <- roc(log.reg.df$pa, pa_probs)
+# print(auc_pa)
+# plot(auc_pa, col = "blue", main = "ROC Curve for P. aeruginosa")
 
 # Extract optimal information
 optimal_threshold <- coords(auc_pa, "best", ret = "threshold")[1]
@@ -1811,3 +1811,329 @@ cell_enrichment_auc_df <- data.frame(RNAseq_HR_auc,
 colnames(cell_enrichment_auc_df) <- colnames(pred.df[ , c(1, 2, 3, 4)])
 
 ```
+
+## 4. Load in and process the validation set
+
+a. Load in and format the new metadata
+```{r validation metadata}
+val_metadata <- as.data.frame(read_xlsx("../data/BUGS_MetaData4Doxey_885_2025.09.09.xlsx"))
+val_metadata <- val_metadata[val_metadata$eligible4aim1 == 1 & val_metadata$tubetype == "Separate tubes" , ]
+val_metadata$ptid <- as.character(val_metadata$ptid)
+```
+
+b. Process the Salmon host-response data
+```{r validation salmon host response}
+hub <- AnnotationHub()
+ensdb_query <- query(hub, c("EnsDb", "sapiens", "109"))
+
+# 2) -> Receive the record with 'object[["AH109606"]]'
+ensdb_109 <- ensdb_query[["AH109606"]]
+
+# 3) -> Extract transcript and gene information
+Vtx_data <- transcripts(ensdb_109, return.type = "DataFrame")
+Vtx2gene <- Vtx_data[ , c("tx_id", "gene_id")]
+
+# 4) -> Create a named list pointing to all .sf files
+Vsalmon_files <- "/data/mchomm/Homm-UTI-transcriptome/data/validation/salmon_out"
+Vsalmon_files_batch_5 <- "/data/mchomm/Homm-UTI-transcriptome/data/validation/salmon_out_batch_5"
+Vquant.files <- list.files(Vsalmon_files, pattern = "quant.sf$", recursive = TRUE, full.names = TRUE)
+Vquant.files <- c(Vquant.files, list.files(Vsalmon_files_batch_5, pattern = "quant.sf$", recursive = TRUE, full.names = TRUE))
+sample.names <- sapply(Vquant.files, function(x) strsplit(x, "/")[[1]][8])
+sample.names <- sapply(sample.names, function(x) strsplit(x, "_")[[1]][1])
+names(Vquant.files) <- sample.names
+
+# 5) -> Use tximport using this named list
+Vtxi <- tximport(Vquant.files, type = "salmon", tx2gene = Vtx2gene, ignoreTxVersion = TRUE)
+Vtxi_copy <- Vtxi
+Vtxi <- Vtxi_copy
+
+## unrelated -> get IDs of val patients
+validation_patients <- colnames(Vtxi$abundance)
+val_metadata <- val_metadata[val_metadata$ptid %in% validation_patients , ]
+validation_patients <- val_metadata$ptid
+
+# Check predictive power of CSF3R
+
+# ID patients that express over 5000 human genes
+Vhuman.gene.counts <- apply(Vtxi$counts, 2, function(x) sum(x != 0))
+Vhuman.gene.over.thres <- subset(Vhuman.gene.counts, Vhuman.gene.counts > 5000)
+Vhuman.gene.over.thres <- Vhuman.gene.over.thres[na.omit(names(Vhuman.gene.over.thres))]
+
+# Remove the dirty patient tubes
+Vhuman.gene.over.thres <- Vhuman.gene.over.thres[!names(Vhuman.gene.over.thres) %in% patients.to.remove]
+Vhuman.gene.over.thres <- Vhuman.gene.over.thres[names(Vhuman.gene.over.thres) %in% validation_patients]
+validation_patients <- names(Vhuman.gene.over.thres)
+
+# Subset txi.data to only include these patients
+# txi.data.239$abundance <- subset(txi.data.239$abundance, select = c(names(human.gene.over.thres)))
+# txi.data.239$counts <- subset(txi.data.239$counts, select = c(names(human.gene.over.thres)))
+# txi.data.239$length <- subset(txi.data.239$length, select = c(names(human.gene.over.thres)))
+
+CSF3R_ensembl <- "ENSG00000119535"
+CSF3R_abundance <- Vtxi$abundance[CSF3R_ensembl , validation_patients]
+csf3r_df <- data.frame(ptid = names(CSF3R_abundance), 
+                       TPM = CSF3R_abundance, 
+                       UTI = val_metadata[val_metadata$ptid %in% validation_patients , ]$uti)
+
+csf3r_thres <- 71.04148
+csf3r_df$binary_csf <- sapply(csf3r_df$TPM, function(x) ifelse(x > csf3r_thres, 1, 0))
+
+# # Now use AUC (which is independent of the threshold)
+# Vauc_csf <- glm(UTI ~ TPM, data = csf3r_df, family = binomial)
+# Vauc_csf_probs <- predict(Vauc_csf, type = "response")
+# Vauc_csf_auc <- roc(csf3r_df$UTI, Vauc_csf_probs)
+# print(Vauc_csf_auc)
+
+## ensure keys are clean and comparable
+csf3r_df$ptid   <- as.character(csf3r_df$ptid)
+val_metadata$ptid <- as.character(val_metadata$ptid)
+
+## (optional) guard against accidental many-to-many joins
+stopifnot(!anyDuplicated(csf3r_df$ptid))
+stopifnot(!anyDuplicated(val_metadata$ptid))
+
+## base R: inner join, keep csf3r_df order
+joined_HR <- merge(csf3r_df, val_metadata, by = "ptid", all = FALSE, sort = FALSE)
+joined_HR <- joined_HR[match(csf3r_df$ptid, joined_HR$ptid), ]
+stopifnot(identical(joined_HR$ptid, csf3r_df$ptid))
+
+Vauc_csf <- glm(uti ~ TPM, data = joined_HR, family = binomial)
+Vauc_csf_probs <- predict(Vauc_csf, type = "response")
+Vauc_csf_auc <- roc(joined_HR$uti, Vauc_csf_probs)
+print(Vauc_csf_auc)
+
+
+
+```
+
+c. Process the Kraken/Bracken taxonomy data
+
+```{r validation kraken + bracken tax abundance}
+Vbracken = read.csv("/data/mchomm/Homm-UTI-transcriptome/data/validation/validation_bracken_pathogen_nonhumanRPM.csv", header = TRUE, row.names = 1)
+patients_177 <- csf3r_df$ptid
+Vbracken <- Vbracken[patients_177 , ]
+
+if (!"ptid" %in% names(Vbracken)) {
+  Vbracken$ptid <- rownames(Vbracken)
+}
+
+stopifnot(!anyDuplicated(Vbracken$ptid))
+stopifnot(!anyDuplicated(val_metadata$ptid))
+
+joined <- merge(val_metadata, Vbracken, by = "ptid", all = FALSE)
+nrow(joined)  # should be <= 177 (exactly 177 if Vbracken is a subset by ptid)
+
+joined$RPM_sums_binary = sapply(joined$log10_RPM, function(x) ifelse(x > threshold, 1, 0))
+table(joined$RPM_sums_binary, joined$uti)
+
+Vauc_rpm <- glm(uti ~ log10_RPM, data = joined, family = binomial)
+Vauc_rpm_probs <- predict(Vauc_rpm, type = "response")
+Vauc_rpm_auc <- roc(joined$uti, Vauc_rpm_probs)
+print(Vauc_rpm_auc)
+
+```
+
+d. Look at the combination 
+
+```{r validation combine both these predictions}
+
+stopifnot(!anyDuplicated(joined$ptid), !anyDuplicated(joined_HR$ptid))
+
+extra_cols <- c("ptid", setdiff(names(joined_HR), names(joined)))
+
+joined_both <- joined %>%
+  inner_join(select(joined_HR, all_of(extra_cols)), by = "ptid")
+
+joined_both <- joined_both %>% arrange(match(ptid, joined$ptid))
+absolute_uti <- mapply(function(x, y) ifelse(x == y & x == 1, 1, 0), joined_both$RPM_sums_binary, joined_both$binary_csf)
+joined_both$absolute_uti <- absolute_uti
+
+
+## Create Venn diagram, similar to before
+
+Val_venn_df = joined_both[ , c("ptid", "RPM_sums_binary", "binary_csf", "enrleuks", "uti")]
+Val_venn_df$binary_enrleuks <- sapply(Val_venn_df$enrleuks, function(x) ifelse(x >= 2, 1, 0))
+Val_venn_df$clinical_uti_final <- mapply(function(x, y) ifelse(x == y & y == 1, 1, 0), Val_venn_df$uti, Val_venn_df$binary_enrleuks)
+Val_venn_df$rnaseq_uti_final <- mapply(function(x, y) ifelse(x == y & y == 1, 1, 0), Val_venn_df$RPM_sums_binary, Val_venn_df$binary_csf)
+
+Val_venn_df = Val_venn_df[ , c("clinical_uti_final", "rnaseq_uti_final")]
+colnames(Val_venn_df) <- c("Clinical UTI", "RNA Seq UTI")
+
+# Generate Euler diagram
+val.new.venn <- euler(Val_venn_df)
+
+# Plot four overlapping categories
+plot(val.new.venn, 
+     quantities = TRUE, 
+     fills = c("cornflowerblue", "lightcoral"),
+     alpha = 0.6, 
+     labels = list(font = 2, cex = 1.2), 
+     edges = list(col = "black", lwd = 2),
+     legend = TRUE)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Extra addition -> colour original pca with csf3r
+
+# Add cluster assignments to your data frame
+pca_df_3d_csf3r <- pca_df_3d
+
+CSF3R_vector <- CSF3R_vector
+CSF3R_vector <- CSF3R_vector[match(rownames(CSF3R_vector), names(CSF3R_vector))]
+pca_df_3d_csf3r$colour = 
+
+# Set color palette
+# cluster_colours <- c("1" = "red", "2" = "blue")
+
+# 3D PCA plot with k-means clusters
+k_means_plot_3d <- plot_ly(
+  data = pca_df_3d_csf3r,
+  x = ~PC1,
+  y = ~PC2,
+  z = ~PC3,
+  color = ~colour,
+  type = "scatter3d",
+  mode = "markers",
+  marker = list(size = 5, opacity = 0.8)
+) %>%
+  layout(
+    title = list(text = "3D PCA Plot with K-means Clusters (k = 2)", x = 0.5),
+    scene = list(
+      xaxis = list(title = "PC1"),
+      yaxis = list(title = "PC2"),
+      zaxis = list(title = "PC3")
+    )
+  )
+
+# Display the plot
+k_means_plot_3d
+
+```
+
+
+e. Compute RNA-seq-derived values for all patients (for Nader)
+
+```{r all patients predictions}
+
+# add clinical
+metadata_885 <- as.data.frame(read_xlsx("/data/mchomm/Homm-UTI-transcriptome/data/validation/BUGS_MetaData4Doxey_885_2025.09.09.xlsx"))
+metadata_885$ptid <- as.character(metadata_885$ptid)
+rownames(metadata_885) <- metadata_885$ptid
+# patients_b1_to_b6 <- unique(c(colnames(txi$abundance), val_metadata$ptid))
+# metadata_885 <- metadata_885[patients_b1_to_b6 , ]
+# metadata_885 <- subset(metadata_885, select = c("ptid", "uti", "enrleuks"))
+# metadata_885$binar
+
+# Add rpm_sums
+Vbracken = read.csv("/data/mchomm/Homm-UTI-transcriptome/data/validation/validation_bracken_pathogen_nonhumanRPM.csv", header = TRUE, row.names = 1)
+rpm_sums_all <- Vbracken[ , "log10_RPM"]
+names(rpm_sums_all) <- rownames(Vbracken)
+rpm_sums_all <- c(rpm_sums_all, sapply(rpm_sums_all, function(x) max(log10(x), 0)))
+
+# Add csf3r
+CSF3R_1_to_4 <- txi.496$abundance[CSF3R_ensembl , ]
+CSF3R_5_to_6 <- Vtxi$abundance[CSF3R_ensembl , ]
+CSF3R_all <- c(CSF3R_1_to_4, CSF3R_5_to_6)
+
+# 1) Make sure ptid are characters and rownames match
+metadata_885$ptid <- as.character(metadata_885$ptid)
+rownames(metadata_885) <- metadata_885$ptid
+
+# 2) Add RPM and CSF3R columns by matching names
+metadata_885$rpm_sums_all <- rpm_sums_all[rownames(metadata_885)]
+metadata_885$CSF3R_all <- CSF3R_all[rownames(metadata_885)]
+
+# 3) Optional sanity checks
+head(metadata_885)
+summary(metadata_885$rpm_sums_all)
+summary(metadata_885$CSF3R_all)
+
+# Add binary predictions
+metadata_885$binary_CSF3R <- sapply(metadata_885$CSF3R_all, function(x) ifelse(x > csf3r_thres, 1, 0))
+metadata_885$binary_rpm_sums <- sapply(metadata_885$rpm_sums_all, function(x) ifelse(x > threshold, 1, 0))
+
+# Add binary enrleuks
+metadata_885 <- metadata_885[!is.na(metadata_885$enrleuks), ]
+metadata_885$binary_enrleuks <- sapply(metadata_885$enrleuks, function(x) ifelse(x >= 2, 1, 0))
+
+# ABSOLUTE clinical column
+metadata_885$absolute_clinical <- mapply(function(x, y) ifelse(x == y & x == 1, 1, 0), metadata_885$binary_enrleuks, metadata_885$uti)
+
+# ABSOLUTE RNA-seq column
+metadata_885$absolute_rnaseq <- mapply(function(x, y) ifelse(x == y & x == 1, 1, 0), metadata_885$binary_CSF3R, metadata_885$binary_rpm_sums)
+
+# Compute the human gene count
+human.gene.counts.496 <- apply(txi.496$counts, 2, function(x) sum(x != 0))
+human.gene.over.thres.496 <- subset(human.gene.counts.496, human.gene.counts.496 > 5000)
+human.gene.over.thres.496 <- human.gene.over.thres.496[na.omit(names(human.gene.over.thres.496))]
+
+Vhuman.gene.counts.496 <- apply(Vtxi$counts, 2, function(x) sum(x != 0))
+Vhuman.gene.over.thres.496 <- subset(Vhuman.gene.counts.496, Vhuman.gene.counts.496 > 5000)
+Vhuman.gene.over.thres.496 <- Vhuman.gene.over.thres.496[na.omit(names(Vhuman.gene.over.thres.496))]
+
+TOTAL_patient_counts <- c(human.gene.counts.496, Vhuman.gene.counts.496)
+TOTAL_patients_over_5k <- c(human.gene.over.thres.496, Vhuman.gene.over.thres.496)
+
+# Filter metadata to only include human gene count > 5000
+metadata_5k_filtered <- metadata_885[metadata_885$ptid %in% names(TOTAL_patients_over_5k) , ]
+metadata_5k_filtered_no_dirty <- metadata_5k_filtered[
+  tolower(metadata_5k_filtered$tubetype) == "separate tubes" & metadata_5k_filtered$goodsample == 1 & metadata_5k_filtered$eligible4aim1==1,
+]
+
+# write as an xlsx
+library(writexl)
+write_xlsx(metadata_5k_filtered, path  = "/data/mchomm/Homm-UTI-transcriptome/data/validation/predictions_nov_13_2025.xlsx", col_names = TRUE)
+
+# Create another df with same 719 patients, but include the 7 pathogens RPM scores
+# Training set: bracken_subset
+# Validation set: Vbracken
+
+# Start by formatting training
+training_seven_pathogens <- bracken_subset[ , c(1:7)]
+
+# Second, format testing
+testing_seven_pathogens <- Vbracken[ , c("Escherichia.coli_RPM", 
+                                         "Klebsiella.pneumoniae_RPM", 
+                                         "Proteus.mirabilis_RPM", 
+                                         "Pseudomonas.aeruginosa_RPM", 
+                                         "Enterococcus.faecalis_RPM", 
+                                         "Streptococcus.agalactiae_RPM", 
+                                         "Staphylococcus.saprophyticus_RPM")]
+colnames(testing_seven_pathogens) <- colnames(training_seven_pathogens)
+
+# Third, combining into one
+all_seven_pathogens <- rbind(training_seven_pathogens, testing_seven_pathogens)
+all_seven_pathogens <- all_seven_pathogens[metadata_5k_filtered$ptid , ]
+
+# write as an xlsx
+write_xlsx(
+  cbind(ptid = rownames(all_seven_pathogens), all_seven_pathogens),
+  path = "/data/mchomm/Homm-UTI-transcriptome/data/validation/seven_pathogens.xlsx",
+  col_names = TRUE
+)  
+```
+
+

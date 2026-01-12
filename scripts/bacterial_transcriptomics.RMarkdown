@@ -19,6 +19,10 @@ Turning Salmon-derived bacterial transcriptomic data into DESeq2 objects.
 library(tximport)
 library(Biostrings)
 library(stringr)
+library(tidyheatmaps)
+library(tidyr)
+library(dplyr)
+library(tidyverse)
 ```
 
 ## Format data
@@ -51,8 +55,7 @@ generate.txi <- function(filepath, tx2gene) {
   #' 'tx2gene' is the object produced after running create.tx2gene function
   #'
   quant.files <- list.files(filepath, pattern = "quant.sf$", recursive = TRUE, full.names = TRUE)
-  sample.names <- sapply(quant.files, function(x) strsplit(x, "/")[[1]][10])
-  sample.names <- sapply(sample.names, function(x) strsplit(x, "_")[[1]][1])
+  sample.names <- basename(dirname(quant.files))
   names(quant.files) <- sample.names
   txi <- tximport(quant.files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = FALSE)
   return(txi)
@@ -70,20 +73,204 @@ kpn_cds <- "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/k
 efs_cds <- "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/ef/cds/ncbi_dataset/data/GCF_000393015.1/cds_from_genomic.fna"
 pms_cds <- "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pm/cds/ncbi_dataset/data/GCF_000069965.1/cds_from_genomic.fna"
 paa_cds <- "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pa/cds/ncbi_dataset/data/GCF_000006765.1/cds_from_genomic.fna"
+ec_cds <- "/data/mchomm/pathogen_surveillance/data/salmon_upec_data/GCF_014262945.1_ASM1426294v1_cds_from_genomic.fna"
 
 # Create tx2gene for each pathogen
 kpn_tx2gene <- create.tx2gene(kpn_cds)
 efs_tx2gene <- create.tx2gene(efs_cds)
 pms_tx2gene <- create.tx2gene(pms_cds)
 paa_tx2gene <- create.tx2gene(paa_cds)
+ec_tx2gene <- create.tx2gene(ec_cds)
 
 # Create txi object for each pathogen
 kpn_txi <- generate.txi("/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/kn/salmon_output/Klebsiella_pneumoniae", kpn_tx2gene)
-View(kpn_txi$abundance)
-
 efs_txi <- generate.txi("/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/ef/salmon_output/Enterococcus_faecalis", efs_tx2gene)
 pms_txi <- generate.txi("/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pm/salmon_output/Proteus_mirabilis", pms_tx2gene)
-paa_txi <- generate.txi("/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pa/salmon_output/Pseudomonas aeruginosa", paa_tx2gene)
+paa_txi <- generate.txi("/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pa/salmon_output/Pseudomonas_aeruginosa", paa_tx2gene)
+ec_txi <- generate.txi("/data/mchomm/pathogen_surveillance/data/salmon_upec_data/ecoli_salmon_output", ec_tx2gene)
 
 ```
 
+### obtain E. coli txi data from last year
+
+```{r E. coli txi}
+
+```
+
+### Plot across the patients
+
+```{r run functions per pathogen}
+
+bt_heatmap <- function(txi, 
+                       metadata, 
+                       annotation_column = c("ptid", "uti", "ecoli", "klebsiella", "proteus", "enterococcus", "otheruropathogen", "pyelo_sbj", "mainpathogen"),
+                       patients) {
+  
+  # Ensure patient IDs are characters
+  patients <- as.character(patients)
+  
+  # Identify missing patients
+  missing_patients <- setdiff(patients, colnames(txi$abundance))
+  
+  # Create a zero-filled matrix for the missing patients
+  if (length(missing_patients) > 0) {
+    zeros_mat <- matrix(0, nrow = nrow(txi$abundance), ncol = length(missing_patients))
+    colnames(zeros_mat) <- missing_patients
+    rownames(zeros_mat) <- rownames(txi$abundance)
+    
+    # Bind to original matrix
+    txi$abundance <- cbind(txi$abundance, zeros_mat)
+  }
+  
+  # Reorder to match 'patients' vector
+  txi$abundance <- txi$abundance[, patients]
+
+  # Log-transform
+  abundance <- apply(txi$abundance, MARGIN = c(1, 2), FUN = function(x) log10(x + 1))
+  
+  # Long-format abundance
+  txi_long <- as.data.frame(abundance) %>%
+    rownames_to_column(var = "Transcript.ID") %>%
+    pivot_longer(-Transcript.ID, names_to = "ptid", values_to = "Expression")
+  
+  # Ensure matching types
+  metadata$ptid <- as.character(metadata$ptid)
+  txi_long$ptid <- as.character(txi_long$ptid)
+  
+  # Merge metadata
+  txi_long <- left_join(txi_long, metadata[, annotation_column], by = "ptid")
+  txi_long <- txi_long[order(txi_long$mainpathogen) , ]
+  txi_long <- txi_long[order(txi_long$pyelo_sbj) , ]
+  
+  # Generate heatmap
+  heatmap <- tidyheatmap(
+    df = txi_long, 
+    rows = Transcript.ID,
+    columns = ptid,
+    values = Expression,
+    annotation_col = annotation_column[1:length(annotation_column)],
+    show_rownames = FALSE,
+    colors = c("white", "red"),
+    cluster_rows = TRUE,
+    cluster_cols = TRUE
+  )
+  
+  return(list(heatmap = heatmap, txi_long = txi_long, abundance = abundance, abundance = abundance))
+  
+}
+
+
+
+kpn_heatmap <- bt_heatmap(kpn_txi, reads.meta.counts.239, patients = good.patients)
+efs_heatmap <- bt_heatmap(efs_txi, reads.meta.counts.239, patients = good.patients)
+pms_heatmap <- bt_heatmap(pms_txi, reads.meta.counts.239, patients = good.patients)
+paa_heatmap <- bt_heatmap(paa_txi, reads.meta.counts.239, patients = good.patients)
+ec_heatmap <- bt_heatmap(ec_txi, reads.meta.counts.239, patients = good.patients)
+
+print(kpn_heatmap)
+print(efs_heatmap)
+print(pms_heatmap)
+print(paa_heatmap)
+print(ec_heatmap)
+
+```
+
+### Mega heatmap with all species
+
+```{r run functions per pathogen}
+
+# Create the long df
+
+txi_to_long <- function(txi, patients, organism) {
+
+  # Log-transform and pivot
+  abundance <- apply(txi, MARGIN = c(1, 2), FUN = function(x) log10(x + 1))
+  long_df <- as.data.frame(abundance) %>%
+    rownames_to_column(var = "Transcript.ID") %>%
+    pivot_longer(-Transcript.ID, names_to = "ptid", values_to = "Expression")
+  
+  # Add organism label
+  long_df$Organism <- organism
+  return(long_df)
+}
+
+# Run function on all five
+
+kpn_long <- txi_to_long(kpn_heatmap$abundance, good.patients, "Klebsiella")
+efs_long <- txi_to_long(efs_heatmap$abundance, good.patients, "Enterococcus")
+pms_long <- txi_to_long(pms_heatmap$abundance, good.patients, "Proteus")
+paa_long <- txi_to_long(paa_heatmap$abundance, good.patients, "P. aeruginosa")
+ec_long <- txi_to_long(ec_heatmap$abundance, good.patients, "E. coli")
+
+txi_long_combined <- bind_rows(kpn_long, efs_long, pms_long, paa_long, ec_long)
+
+reads.meta.counts.239$ptid <- as.character(reads.meta.counts.239$ptid)
+txi_long_combined$ptid <- as.character(txi_long_combined$ptid)
+
+# Merge metadata
+metadata_columns <- c("ptid", "uti", "ecoli", "klebsiella", "proteus", "enterococcus", "otheruropathogen", "pyelo_sbj", "mainpathogen")
+txi_long_combined <- left_join(txi_long_combined, reads.meta.counts.239[, metadata_columns], by = "ptid")
+txi_long_combined <- txi_long_combined[order(txi_long_combined$mainpathogen, decreasing = TRUE) , ]
+
+unclustered_heatmap <- tidyheatmap(
+  df = txi_long_combined,
+  rows = Transcript.ID,
+  columns = ptid,
+  values = Expression,
+  annotation_row = Organism,
+  annotation_col = metadata_columns,
+  show_rownames = FALSE,
+  show_colnames = FALSE,
+  colors = c("white", "darkblue"),
+  cluster_rows = FALSE,
+  cluster_cols = FALSE
+)
+
+pdf("unclustered_heatmap.pdf", width = 15, height = 12)
+print(unclustered_heatmap)
+dev.off()
+
+```
+
+### Heatmap with only the E. coli pangenome
+
+```{r run functions per pathogen}
+id_file_path <- "/data/mchomm/pathogen_surveillance/data/deseq2/matching_transcript_genes_pangenome.txt"
+id_file <- read.table(id_file_path, header = TRUE)
+id_file <- id_file[-c(1) , ]
+tx2gene <- id_file[ , c(1, 2)]
+
+quant.files <- list.files("/data/mchomm/pathogen_surveillance/data/salmon_ecoli_pangenome_data/ecoli_pangenome_salmon_output", pattern = "quant.sf$", recursive = TRUE, full.names = TRUE)
+sample.names <- sapply(quant.files, function(x) strsplit(x, "/")[[1]][8])
+sample.names <- sapply(sample.names, function(x) strsplit(x, "_")[[1]][1])
+names(quant.files) <- sample.names
+
+txi.ecoli <- tximport(quant.files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = FALSE)
+
+ec_pangenome_heatmap <- bt_heatmap(txi.ecoli, metadata = new.metadata.496, patients = new.metadata.496$ptid)
+```
+
+
+### Find out which E. coli strains contribute most
+
+```{r run functions per pathogen}
+
+sort(rowSums(txi.ecoli$counts), decreasing = TRUE)
+
+```
+
+
+
+### Heatmap with only the E. coli pangenome updegs
+
+```{r run functions per pathogen}
+
+degs <- c(upreg.genes, downreg.genes)
+gene.subset.txi.ecoli <- txi.ecoli
+gene.subset.txi.ecoli$abundance <- gene.subset.txi.ecoli$abundance[degs , ]
+gene.subset.txi.ecoli$length <- gene.subset.txi.ecoli$length[degs , ]
+gene.subset.txi.ecoli$counts <- gene.subset.txi.ecoli$abundance[counts , ]
+
+metadata <- new.metadata.496[order(new.metadata.496$pyelo_sbj) , ]
+ec_pangenome_degs_heatmap <- bt_heatmap(gene.subset.txi.ecoli, metadata = metadata, patients = new.metadata.496$ptid)
+```

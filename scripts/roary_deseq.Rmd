@@ -1,0 +1,107 @@
+---
+title: "andrew_deseq_pyelo"
+author: "Max Homm"
+date: "2025-07-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r packages}
+library(tximport)
+library(Biostrings)
+library(stringr)
+library(tidyheatmaps)
+library(tidyr)
+library(dplyr)
+library(tidyverse)
+```
+
+```{r load data}
+
+# Create tx2gene object
+
+create.tx2gene <- function(filepath) {
+  id_file <- readDNAStringSet(filepath)  locus_id <- names(id_file)
+  transcript_id <- sapply(locus_id, function(x) strsplit(x, " ")[[1]][1])
+  df <- data.frame(transcript_id = transcript_id, locus_id = locus_id, stringsAsFactors = FALSE)
+  
+  return(df)
+}
+
+roary_tx2gene <- create.tx2gene("/data/mchomm/pyelo/data/roary/roary_output/pan_genome_reference.fa")
+
+# Generate the txi
+
+generate.txi <- function(filepath, tx2gene) {
+  #'
+  #' 'filepath' points to the location of the salmon output files
+  #' 'tx2gene' is the object produced after running create.tx2gene function
+  #'
+  quant.files <- list.files(filepath, pattern = "quant.sf$", recursive = TRUE, full.names = TRUE)
+  sample.names <- basename(dirname(quant.files))
+  names(quant.files) <- sample.names
+  txi <- tximport(quant.files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = FALSE)
+  return(txi)
+}
+
+# roary_txi <- generate.txi("/data/mchomm/pyelo/data/roary/salmon_output", roary_tx2gene)
+
+```
+
+```{r run deseq}
+
+ecoli.gene.counts <- apply(roary_txi$counts, 2, function(x) sum(x != 0))
+ecoli.gene.over.thres <- subset(ecoli.gene.counts, ecoli.gene.counts >  100) # Vector contains all patients to include
+ecoli.gene.over.thres <- ecoli.gene.over.thres[na.omit(names(ecoli.gene.over.thres))]
+
+# see which patients are tested for pyelo now: 
+pyelo.tested <- metadata[!is.na(metadata$pyelo_sbj) , ]$ptid
+ecoli.gene.over.thres <- intersect(names(ecoli.gene.over.thres), pyelo.tested)
+
+# Subset txi data to only include these patients
+txi.copy <- roary_txi
+txi.copy$abundance <- subset(txi.copy$abundance, select = c(ecoli.gene.over.thres))
+txi.copy$counts <- subset(txi.copy$counts, select = c(ecoli.gene.over.thres))
+txi.copy$length <- subset(txi.copy$length, select = c(ecoli.gene.over.thres))
+
+# Create metadata for deseq
+ecoli.df <- subset(metadata, select = c(ptid, uti, gender, agemo, pyelo_sbj, enrleuks, ngal_ng_ml))
+ecoli.df$ptid <- as.character(ecoli.df$ptid)
+ecoli.df <- ecoli.df[ecoli.df$ptid %in% ecoli.gene.over.thres , ]
+ecoli.df$pyelo_word <- sapply(ecoli.df$pyelo_sbj, function(x) if (x == 1) {return("Positive")} else {return("Negative")})
+
+# Run DESeq2
+dds.ecoli <- DESeqDataSetFromTximport(txi.copy, ecoli.df, ~pyelo_word + agemo + gender)
+dds.ecoli <- DESeq(dds.ecoli)
+
+# Normalize the data with a variance stabilizing transformation, and create/plot PCA
+vsdata <- vst(dds.ecoli, blind = TRUE)
+pcaData <- plotPCA(vsdata, intgroup = "pyelo_word", returnData = TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+ggplot(pcaData, aes(x = PC1, y = PC2, color = pyelo_word)) +
+  geom_point(size = 3) +
+  stat_ellipse(level = 0.95, linetype = 2) +  # Add confidence ellipse
+  ggtitle("E. coli Differentially Expressed Genes") +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  theme(plot.title = element_text(face = "bold", size = 16, hjust = 0.5))
+
+# Creates df with all genes and their expression levels between two groups
+res.ecoli <- results(dds.ecoli, contrast = c("pyelo_word", "Positive", "Negative"))
+
+# Map ensembl ids to their actual gene names
+res.df.ecoli <- as.data.frame(res.ecoli)
+
+# Create the EnhancedVolcano plot
+volc <- EnhancedVolcano(res.df.ecoli, x = "log2FoldChange", y = "padj", lab = rownames(res.df.ecoli), 
+                        drawConnectors = TRUE, pointSize = 3.0, title = "E. coli DEG for Pyelo: Gene Threshold = 500", 
+                        subtitle = "", FCcutoff = 1.5, pCutoff = 0.05)
+volc
+
+```

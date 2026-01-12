@@ -1,0 +1,21 @@
+---
+title: "Pyelonephritis project -> Nader grant 2 analysis"
+author: "Max Homm"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+```
+
+## Overview
+
+Predicting pyelonephritis in children based on RNA-seq profiles
+
+## Loading packages
+
+```{r packages, warning=TRUE}
+library(ggplot2)
+library(DESeq2)
+```
+

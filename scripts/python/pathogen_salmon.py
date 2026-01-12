@@ -50,26 +50,43 @@ fastp_files = generate_paths(paths=paths, patients=good_patients)
 
 # Create your pathogen objects
 
-# K. pneumoniae
-kpn_output = "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/kn/salmon_output"
-kpn = Pathogen("Klebsiella pneumoniae", "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/kn/salmon_index")
-kpn.build_index("/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/kn/cds/ncbi_dataset/data/GCF_000240185.1/cds_from_genomic.fna")
-kpn.run_salmon(fastp_files, kpn_output)
+def run_salmon(kn = False, ef = False, pa = False, pm = False, all = False):
 
-# E. faecalis
-efs_output = "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/ef/salmon_output"
-efs = Pathogen("Enterococcus faecalis", "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/ef/salmon_index")
-efs.build_index("/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/ef/cds/ncbi_dataset/data/GCF_000393015.1/cds_from_genomic.fna")
-efs.run_salmon(fastp_files, efs_output)
+    # K. pneumoniae
+    if kn: 
+        kpn_output = "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/kn/salmon_output"
+        kpn = Pathogen("Klebsiella pneumoniae", "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/kn/salmon_index")
+        kpn.build_index("/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/kn/cds/ncbi_dataset/data/GCF_000240185.1/cds_from_genomic.fna")
+        kpn.run_salmon(fastp_files, kpn_output)
 
-# P. aeruginosa
-paa_output = "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pa/salmon_output"
-paa = Pathogen("Pseudomonas aeruginosa", "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pa/salmon_index")
-paa.build_index("/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pa/cds/ncbi_dataset/data/GCF_000006765.1/cds_from_genomic.fna")
-paa.run_salmon(fastp_files, paa_output)
+    # E. faecalis
+    if ef: 
+        efs_output = "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/ef/salmon_output"
+        efs = Pathogen("Enterococcus faecalis", "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/ef/salmon_index")
+        efs.build_index("/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/ef/cds/ncbi_dataset/data/GCF_000393015.1/cds_from_genomic.fna")
+        efs.run_salmon(fastp_files, efs_output)
 
-# P. mirabilis
-pms_output = "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pm/salmon_output"
-pms = Pathogen("Proteus mirabilis", "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pm/salmon_index")
-pms.build_index("/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pm/cds/ncbi_dataset/data/GCF_000069965.1/cds_from_genomic.fna")
-pms.run_salmon(fastp_files, pms_output)
+    # P. aeruginosa
+    if pa: 
+        paa_output = "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pa/salmon_output"
+        paa = Pathogen("Pseudomonas aeruginosa", "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pa/salmon_index")
+        paa.build_index("/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pa/cds/ncbi_dataset/data/GCF_000006765.1/cds_from_genomic.fna")
+        paa.run_salmon(fastp_files, paa_output)
+
+    # P. mirabilis
+    if pm: 
+        pms_output = "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pm/salmon_output"
+        pms = Pathogen("Proteus mirabilis", "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pm/salmon_index")
+        pms.build_index("/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/pm/cds/ncbi_dataset/data/GCF_000069965.1/cds_from_genomic.fna")
+        pms.run_salmon(fastp_files, pms_output)
+
+    if all: 
+        # Everything together (E. coli CFT073, E. faecalis, K. pneumoniae, P. aeruginosa, P. mirabilis)
+        all_output = "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/all/salmon_output"
+        all = Pathogen("all_five_pathogens", "/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/all/salmon_index")
+        all.build_index("/data/mchomm/Homm-UTI-transcriptome/data/bacterial_transcriptomics/all/all.fna")
+        all.run_salmon(fastp_files, all_output)
+
+# Run salmon
+if __name__ == "__main__":
+    run_salmon(all=True)

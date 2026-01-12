@@ -10,7 +10,7 @@ import pandas as pd
 
 # Specify file paths
 
-data = "" # Replace with path to fastq files
+data = "/data/mchomm/Homm-UTI-transcriptome/data/validation/Nader_Bugs_6th_Batch/" # Replace with path to fastq files
 
 # Run fastp
 
@@ -18,21 +18,28 @@ data = "" # Replace with path to fastq files
 
 paired_dict = {}
 for file in sorted(glob.glob(data + "*.fastq.gz")):
-    patient_full_id = file.split("/")[8].split(".")[0] # Must tailor to your file
+    patient_full_id = file.split("/")[7].split(".")[0] # Must tailor to your file
     patient_partial_id = patient_full_id.split("_")[0]
     if patient_partial_id in paired_dict:
         paired_dict[patient_partial_id].append(file)
     else:
         paired_dict[patient_partial_id] = [file]
 
+print(paired_dict)
+print(len(paired_dict))
+for key, value in paired_dict.items():
+    print(f"{key}: len = {len(value)}")
+
 # 2) -> Iterate through this dict and run fastp
 
 # To see progress throughout
 iteration_count = 0
-total_iterations = len(overall_dict)
+total_iterations = len(paired_dict) # paired_dict instead ??
 
 # Loop through each patient
 for k, v in paired_dict.items():
+
+    print(v, k)
 
     # Update which iteration you're on
     iteration_count += 1
@@ -45,19 +52,21 @@ for k, v in paired_dict.items():
     v1_id = v[0].split("/")[-1].split(".")[0].split("_")[2]
     v2_id = v[1].split("/")[-1].split(".")[0].split("_")[2]
 
+    print(v1_run, v2_run, v1_id, v2_id)
+
     # Orders them -> R1, R2
     if v1_run != "R1":
         v[0], v[1] = v[1], v[0]
 
     # Creates the output directory for new fastq files
-    fastq_output_dir = "" # Replace with desired output directory location
+    fastq_output_dir = "/data/mchomm/Homm-UTI-transcriptome/data/validation_fastp_output/" # Replace with desired output directory location
     os.makedirs(fastq_output_dir, exist_ok=True)
 
     # Creates the output directory for qc information
-    summary_output_dir = "" # Replace with location of where to put HTML and JSON summary data
+    summary_output_dir = "/data/mchomm/Homm-UTI-transcriptome/data/validation_fastp_summary/" # Replace with location of where to put HTML and JSON summary data
     os.makedirs(summary_output_dir, exist_ok=True)
 
     # Runs fastp
-    subprocess.run(f"fastp --in1 {v[0]} --in2 {v[1]} --out1 fastq_output_dir/{k}_{v1_id}_{v1_run}.fastq.gz "
-                   f"--out2 fastq_output_dir/{k}_{v2_id}_{v2_run}.fastq.gz --html summary_output_dir//{k}.html "
-                   f"--json summary_output_dir/{k}.json --report_title {k}_{v1_id}_report --trim_front1 8 --trim_front2 8", shell=True)
+    subprocess.run(f"fastp --in1 {v[0]} --in2 {v[1]} --out1 {fastq_output_dir}/{k}_{v1_id}_{v1_run}.fastq.gz "
+                   f"--out2 {fastq_output_dir}/{k}_{v2_id}_{v2_run}.fastq.gz --html {summary_output_dir}/{k}.html "
+                   f"--json {summary_output_dir}/{k}.json --report_title {k}_{v1_id}_report --trim_front1 8 --trim_front2 8", shell=True)

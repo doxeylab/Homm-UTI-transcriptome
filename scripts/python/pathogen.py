@@ -17,7 +17,7 @@ class Pathogen:
         """
         Represents a pathogen and its reference index.
 
-        Parameters:
+        Params:
         - name (str): Species name (e.g., 'Klebsiella pneumoniae')
         - index_path (str): Path to Salmon index for this species
         """
@@ -31,9 +31,9 @@ class Pathogen:
         """
         Build a Salmon index for this pathogen from a transcriptome FASTA file.
 
-        Parameters:
+        Params:
         - transcriptome_fasta (str): Path to the FASTA file of transcript sequences
-        - kmer_size (int): K-mer size to use for the index (default = 31)
+        - kmer_size (int): k-mer size to use for the index
         """
         if os.path.exists(self.index_path):
             print(f"Index already exists at {self.index_path}, skipping.")
@@ -53,7 +53,7 @@ class Pathogen:
         """
         Run Salmon quantification for all patients against this pathogen.
 
-        Parameters:
+        Params:
         - patients (dict): patient_id -> [R1, R2] FASTQ file list
         - output_root (str): Root output dir (will create one per patient)
         - threads (int): Number of threads to use per job
