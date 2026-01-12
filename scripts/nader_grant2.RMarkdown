@@ -1,0 +1,1035 @@
+---
+title: "Nader's second grant analysis"
+author: "Max Homm"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Overview
+
+Perform the analyses for Nader's second grant
+
+## Loading packages
+
+```{r package loading}
+library(DESeq2)
+library(ggplot2)
+library(biomaRt)
+library(EnhancedVolcano)
+library(factoextra)
+library(org.Hs.eg.db)
+library(ensembldb)
+library(tximport)
+library(AnnotationHub)
+library(clusterProfiler)
+library(AnnotationDbi)
+library(ggvenn)
+library(ComplexHeatmap)
+library(reshape2)
+library(dplyr)
+library(tidyr)
+library(readxl)
+library(pROC)
+library(circlize)
+library(ggpubr)
+library(effsize)
+library(mclust)
+library(classInt)
+library(patchwork)
+library(grid)
+library(eulerr)
+library(devtools)
+library(xCell)
+library(circlize)
+library(plotly)
+library(showtext)
+```
+
+## Question 2: Get the UTI signature 3 ways
+
+### Way 1: Using unsupervised host response and pathogen abundance
+
+```{r Q2 A1}
+
+# Load the metadata that will be used
+
+patients.to.remove <- c("15887", "15963", "15985", "15991", "15994", "16003", 
+                        "16050", "15860", "15900", "15906", "15927", "16018", 
+                        "16089")
+
+metadata <- read_xlsx("/data/mchomm/pathogen_surveillance/data/neelanjay_data/metadata8.9.24.xlsx") %>%
+  as.data.frame() %>% 
+  filter(goodsample == 1) %>%
+  filter(!(ptid %in% patients.to.remove)) %>%
+  filter(ptid %in% patients.over.thres)
+
+patients.kept <- metadata$ptid
+
+# Part 1: Host response -> Perform ROC for CSF3R ###############################
+
+# CSF3R expression
+CSF3R_ensembl <- "ENSG00000119535"
+CSF3R_vector <- txi.data.239$abundance %>%
+  as.data.frame() %>%
+  slice(match(CSF3R_ensembl, rownames(.))) %>%
+  select(all_of(intersect(colnames(.), patients.kept))) %>%
+  unlist()
+
+# df to go off of
+csf3r_df <- data.frame(
+  CSF3R = CSF3R_vector,
+  row.names = names(CSF3R_vector)
+)
+csf3r_df$ptid <- rownames(csf3r_df)
+pred_df_with_id <- pred.df %>% mutate(ptid = rownames(pred.df))
+
+results.df <- inner_join(pred_df_with_id, csf3r_df, by = "ptid") %>%
+  `rownames<-`(.$ptid)
+
+
+# Part 2: Pathogen abundance -> perform ROC ####################################
+
+rpm_df <- data.frame(
+  RPM = rpm_sums,
+  row.names = names(rpm_sums)
+)
+rpm_df$ptid <- rownames(rpm_df)
+rpm_df_with_id <- rpm_df %>% mutate(ptid = rownames(rpm_df))
+
+results.df <- inner_join(results.df, rpm_df_with_id, by = "ptid") %>%
+  `rownames<-`(.$ptid) %>%
+  select(-ptid)
+
+# ROC function, run on both ####################################################
+
+perform.roc <- function(df, predictor = 'CSF3R', predicted = 'Clinical Pathogen Abundance') {
+  
+  # Ensure outcome is a factor or binary numeric (0/1)
+  outcome <- df[[predicted]]
+  if (!is.numeric(outcome)) {
+    outcome <- as.numeric(as.factor(outcome)) - 1  # Converts to 0/1
+  }
+  
+  print(df[[predictor]])
+  print(outcome)
+  
+  # Run ROC
+  roc_obj <- roc(response = outcome, predictor = df[[predictor]], direction = "<")
+  
+  # Get AUC
+  auc_val <- auc(roc_obj)
+  
+  # Get optimal threshold (Youden’s J = max(sens + spec - 1))
+  coords_df <- coords(roc_obj, x = "best", best.method = "youden", ret = c("threshold", "sensitivity", "specificity"), transpose = FALSE)
+  optimal_threshold <- coords_df$threshold
+  
+  return(list(
+    roc = roc_obj,
+    auc = auc_val,
+    threshold = optimal_threshold
+  ))
+}
+
+# 1) -> host response
+host_response_result <- perform.roc(results.df, predictor = 'CSF3R', predicted = 'RNA-Seq Host Response Cluster')
+host_response_auc_thres <- host_response_result$threshold
+results.df$hr_positive <- sapply(results.df$CSF3R, function(x) ifelse(x >= host_response_auc_thres, TRUE, FALSE))
+host_response_auc_thres
+
+# host_response_result <- perform.roc(results.df, predictor = 'CSF3R', predicted = 'Clinical Host Response Score')
+# host_response_auc_thres <- host_response_result$threshold
+# results.df$hr_positive <- sapply(results.df$CSF3R, function(x) ifelse(x >= host_response_auc_thres, TRUE, FALSE))
+# host_response_auc_thres
+
+
+# 2) -> pathogen abundance
+pathogen_abundance_result <- perform.roc(results.df, predictor = 'RPM', predicted = 'RNA-Seq Pathogen Abundance')
+pathogen_abundance_auc_thres <- pathogen_abundance_result$threshold
+results.df$pa_positive <- sapply(results.df$RPM, function(x) ifelse(x >= pathogen_abundance_auc_thres, TRUE, FALSE))
+pathogen_abundance_auc_thres
+
+```
+
+```{r Q3}
+
+# Prereq: Find the patients to use
+
+load('/data/mchomm/Homm-UTI-transcriptome/data/reads.meta.counts.496.RData')
+read_threshold <- 0
+patients_df <- reads.meta.counts.496[reads.meta.counts.496$total.reads >= read_threshold , c(1:25)]
+patients <- patients_df$ptid
+
+# Part 1: Apply host response signature
+
+# Load the txi df, add all of the relevant columns
+txi <- txi.data
+CSF_496 <- txi$abundance[CSF3R_ensembl , ]
+patients_df$CSF3R_abundance <- CSF_496[as.character(patients_df$ptid)]
+patients_df$host_response_binary <- ifelse(patients_df$CSF3R_abundance > host_response_auc_thres, 1, 0)
+patients_df$enrleuks_binary <- ifelse(patients_df$enrleuks == 1, 0, ifelse(!is.na(patients_df$enrleuks), 1, NA))
+table(patients_df$host_response_binary == 1 & (patients_df$enrleuks >= 2 & !is.na(patients_df$enrleuks)))
+table(patients_df$host_response_binary == 1 & patients_df$uti == 1)
+
+roc_obj <- roc(response = patients_df$enrleuks_binary, predictor = patients_df$CSF3R_abundance, direction = "<")
+coords_df <- coords(roc_obj, x = "best", best.method = "youden", ret = c("threshold", "sensitivity", "specificity"), transpose = FALSE)
+optimal_threshold <- coords_df$threshold
+
+
+# Part 2: Apply pathogen abundance signature
+
+load("/data/mchomm/Homm-UTI-transcriptome/data/bracken_rpm_496.RData")
+
+seven.pathogens <- c("Escherichia coli", "Klebsiella pneumoniae", "Enterococcus faecalis", "Proteus mirabilis", 
+                     "Pseudomonas aeruginosa", "Staphylococcus saprophyticus", "Streptococcus agalactiae") 
+
+bracken_subset <- bracken_rpm_496[ , colnames(bracken_rpm_496) %in% seven.pathogens]
+rpm_sums_496 <- rowSums(bracken_subset, na.rm = TRUE)
+patients_df$rpm_sums <- rpm_sums_496[as.character(patients_df$ptid)]
+
+roc_obj <- roc(response = patients_df$uti, predictor = patients_df$rpm_sums, direction = "<")
+patients_df$pathogen_abundance_binary <- ifelse(patients_df$rpm_sums > pathogen_abundance_auc_thres, 1, 0)
+
+# Put it all together
+
+final_df <- subset(patients_df, select = c(ptid, total.reads, uti, enrleuks_binary, rpm_sums, CSF3R_abundance, pathogen_abundance_binary, host_response_binary))
+colnames(final_df) <- c("ptid",
+                        "Total Raw RNA-Seq Read Count",
+                        "Clinical Pathogen Abundance", 
+                        "Clinical LE >= Trace",
+                        "RNA-Seq Pathogen Abundance", 
+                        "RNA-Seq Host Response Positive (CSF3R Marker)", 
+                        "RNA-Seq Pathogen Abundance Binary (14825.84 RPM)", 
+                        "RNA-Seq Host Response Binary (71.04148 TPM of CSF3R)")
+
+write.csv(final_df , file = "/data/mchomm/Homm-UTI-transcriptome/misc/nader_grant2/nader_grant_2.csv", row.names = TRUE, quote = FALSE)
+
+```
+
+## Jul 29th, 2025, new way -> perform DESeq2 for both sup/unsup, take top x genes for each that have < X% correlation with others
+
+```{r new type -> load the data}
+
+# Load the reads and metadata
+load('/data/mchomm/Homm-UTI-transcriptome/data/reads.meta.counts.496.RData')
+
+# Load the txi
+load('/data/mchomm/Homm-UTI-transcriptome/data/txi.RData')
+
+# txi.data contains the 214 patients
+
+```
+
+### DESeq2 -> Output should be a sorted results.df
+
+```{r obtain DESeq2 results data frame}
+
+# 1) -> Supervised
+supervised.metadata <- reads.meta.counts[colnames(txi.data$abundance) , c("ptid", "enrleuks", "uti")]
+supervised.metadata$ptid <- as.character(supervised.metadata$ptid)
+# supervised.metadata <- supervised.metadata[!is.na(supervised.metadata$enrleuks) , ]
+supervised.metadata$binary_enrleuks <- as.factor(sapply(supervised.metadata$enrleuks, function(x) ifelse(x == 1 | is.na(x), '0', '1')))
+supervised.dds <- DESeqDataSetFromTximport(txi.data, colData = supervised.metadata, design = ~binary_enrleuks)
+# colData(supervised.dds)$binary_enrleuks <- as.factor(colData(supervised.dds)$binary_enrleuks)
+supervised.dds <- DESeq(supervised.dds)
+
+supervised.res <- results(supervised.dds, contrast = c("binary_enrleuks", '1', '0'))
+supervised.res.df <- as.data.frame(supervised.res)
+supervised.res.df$symbol <- mapIds(org.Hs.eg.db, keys = rownames(supervised.res.df), keytype = "ENSEMBL", column = "SYMBOL")
+
+# 2) -> Unsupervised
+unsupervised.metadata <- pred.df
+unsupervised.metadata$ptid <- rownames(unsupervised.metadata)
+unsupervised.metadata <- full_join(supervised.metadata, unsupervised.metadata, by = "ptid")
+unsupervised.metadata[is.na(unsupervised.metadata)] <- 0
+
+# Run deseq
+colnames(unsupervised.metadata)[
+  colnames(unsupervised.metadata) == "RNA-Seq Host Response Cluster"
+] <- "host_cluster"
+unsupervised.metadata$host_cluster <- as.character(unsupervised.metadata$host_cluster)
+unsupervised.dds <- DESeqDataSetFromTximport(
+  txi.data,
+  colData = unsupervised.metadata,
+  design = ~ host_cluster
+)
+unsupervised.dds <- DESeq(unsupervised.dds)
+
+unsupervised.res <- results(unsupervised.dds, contrast = c("host_cluster", '1', '0'))
+unsupervised.res.df <- as.data.frame(unsupervised.res)
+unsupervised.res.df$symbol <- mapIds(org.Hs.eg.db, keys = rownames(unsupervised.res.df), keytype = "ENSEMBL", column = "SYMBOL")
+
+```
+
+### Compare DEG overlap b/w the two
+
+```{r gene overlap}
+
+# See how many genes overlap, padj < 0.05 and log2FoldChange > 1
+supervised_genes <- rownames(
+  supervised.res.df %>%
+    filter(log2FoldChange >= 1, !is.na(symbol)) %>%
+    arrange(pvalue) %>%
+    slice_head(n = 10)
+)
+
+unsupervised_genes <- rownames(
+  unsupervised.res.df %>%
+    filter(log2FoldChange >= 1, !is.na(symbol)) %>%
+    arrange(pvalue) %>%
+    slice_head(n = 10)
+)
+
+# Intersecting genes
+common_genes <- intersect(supervised_genes, unsupervised_genes)
+
+# Unique to each set
+only_supervised <- setdiff(supervised_genes, unsupervised_genes)
+only_unsupervised <- setdiff(unsupervised_genes, supervised_genes)
+
+# Tabular summary
+comparison_table <- data.frame(
+  Category = c("Common to both", "Only in supervised", "Only in unsupervised"),
+  Count = c(length(common_genes), length(only_supervised), length(only_unsupervised))
+)
+
+library(VennDiagram)
+venn.plot <- draw.pairwise.venn(
+  area1 = length(supervised_genes),
+  area2 = length(unsupervised_genes),
+  cross.area = length(intersect(supervised_genes, unsupervised_genes)),
+  category = c("Supervised", "Unsupervised"),
+  fill = c("skyblue", "lightgreen"),
+  lty = "blank",
+  cex = 1.5,
+  cat.cex = 1.2
+)
+grid.draw(venn.plot)
+
+```
+
+### Compare enrichment for both volcano plots
+
+```{r pathway enrichment}
+
+enrichment <- function(res.df, padj_thres, log2fc_thres, up.or.down, save = FALSE) {
+
+  if (up.or.down == "up") {
+    sig.genes <- rownames(res.df[res.df$log2FoldChange > log2fc_thres & res.df$padj < padj_thres, ])
+    sig.genes <- sig.genes[!is.na(sig.genes) & !grepl("^NA", sig.genes)]
+    title = "Upregulated Pathways"
+  } else {
+    sig.genes <- rownames(res.df[res.df$log2FoldChange < -log2fc_thres & res.df$padj < padj_thres, ])
+    sig.genes <- sig.genes[!is.na(sig.genes) & !grepl("^NA", sig.genes)]
+    title = "Downregulated Pathways"
+  }
+  
+  # Run GO analysis
+  GO_results <- enrichGO(gene = sig.genes, OrgDb = "org.Hs.eg.db", keyType = "ENSEMBL", ont = "BP")
+  GO_results_df <- as.data.frame(GO_results)
+  
+  # Print p-values for debugging
+  print("Original p.adjust values:")
+  print(head(GO_results_df$p.adjust))
+  
+  # Create plot using the enrichResult object (GO_results)
+  fit.up <- barplot(GO_results, showCategory = 20) +
+    xlab("Number of Genes") + 
+    ggtitle(title) + 
+    theme(
+      plot.title = element_text(size = 15, face = "bold", hjust = 0.5), 
+      axis.text.y = element_text(size = 12)
+    ) +
+    scale_fill_gradient(
+      low = "#e73512", 
+      high = "#ee794d", 
+      name = "Adjusted p-value",
+      trans = "log10",  # Log transform for small p-values
+      labels = scales::scientific_format()  # Force scientific notation
+    )
+  
+  if (save) {
+    ggsave(
+      filename = paste0(up.or.down, ".pdf"), 
+      plot = fit.up, 
+      device = "pdf", 
+      width = 12,
+      height = 10
+    )
+  }
+  
+  print(paste("Number of significant genes:", length(sig.genes)))
+  return(fit.up)
+}
+
+# Run enrichment function on up/down-regulated genes
+supervised_up <- enrichment(supervised.res.df, 0.05, 1, "up", save = FALSE)
+unsupervised_up <- enrichment(unsupervised.res.df, 0.05, 1, "up", save = FALSE)
+
+# Finally, find the overlap here
+
+supervised_up_categories <- supervised_up$data$ID
+unsupervised_up_categories <- unsupervised_up$data$ID
+
+# Intersecting pwys
+common_pwy <- intersect(supervised_up_categories, unsupervised_up_categories)
+
+# Unique to each set
+only_supervised_pwy <- setdiff(supervised_up_categories, unsupervised_up_categories)
+only_unsupervised_pwy <- setdiff(unsupervised_up_categories, supervised_up_categories)
+
+# Tabular summary
+comparison_table_pwy <- data.frame(
+  Category = c("Common to both", "Only in supervised", "Only in unsupervised"),
+  Count = c(length(common_pwy), length(only_supervised_pwy), length(only_unsupervised_pwy))
+)
+
+library(VennDiagram)
+venn.plot.pwy <- draw.pairwise.venn(
+  area1 = length(supervised_up$data$ID),
+  area2 = length(unsupervised_up$data$ID),
+  cross.area = length(intersect(supervised_up$data$ID, unsupervised_up$data$ID)),
+  category = c("Supervised", "Unsupervised"),
+  fill = c("skyblue", "lightgreen"),
+  lty = "blank",
+  cex = 1.5,
+  cat.cex = 1.2
+)
+grid.draw(venn.plot.pwy)
+
+```
+
+### Function -> output a txi subset with only the top X genes, as well as a correlation matrix for each gene pair
+
+```{r txi subsetting and correlation matrix}
+
+# Create the txi function
+
+subset_txi <- function(results.df, txi, num_genes = 1000, cor_threshold = 0.80, log2FoldChange = 1) {
+  
+  # Filter out genes below log2FC threshold and with NA padj
+  filtered <- results.df[
+    !is.na(results.df$padj) &
+    results.df$log2FoldChange >= log2FoldChange,
+  ]
+  
+  # Sort by adjusted p-value
+  filtered <- filtered[order(filtered$padj), ]
+  
+  # Initialize
+  selected_genes <- character()
+  txi_abund <- txi$abundance
+  remaining_genes <- rownames(filtered)
+  
+  for (gene in remaining_genes) {
+    # Stop if we've collected enough genes
+    if (length(selected_genes) >= num_genes) break
+    
+    # If this is the first gene, always select it
+    if (length(selected_genes) == 0) {
+      selected_genes <- c(selected_genes, gene)
+    } else {
+      # Calculate correlation of current gene to all previously selected
+      cor_vals <- cor(t(txi_abund[c(gene, selected_genes), ]), use = "pairwise.complete.obs")
+      max_cor <- max(abs(cor_vals[1, -1]))  # correlation of gene to all selected
+      
+      if (max_cor < cor_threshold) {
+        selected_genes <- c(selected_genes, gene)
+      }
+    }
+  }
+  
+  # Final filtered result and abundance matrices
+  final_results <- results.df[selected_genes, ]
+  final_abundance <- txi_abund[selected_genes, ]
+  
+  return(list(results = final_results, abundance = final_abundance))
+}
+
+
+# Call this function
+
+# 1) -> Supervised
+supervised.filtered <- subset_txi(results.df = supervised.res.df, txi = txi.data)
+
+# 2) -> Unsupervised
+unsupervised.filtered <- subset_txi(results.df = unsupervised.res.df, txi = txi.data)
+
+```
+
+### Function -> Create models using top X genes that don't correlate over Y%
+
+```{r txi subsetting and correlation matrix}
+
+build_model <- function(results.df, txi_abund, class_vector, top_x_genes = 5, cv = TRUE, seed = 42) {
+  library(randomForest)
+  library(pROC)
+  library(caret)
+  
+  set.seed(seed)
+
+  # 1. Select top genes based on padj
+  top_genes <- rownames(results.df[order(results.df$padj), ])[1:top_x_genes]
+  
+  # 2. Subset abundance matrix (genes = rows, samples = columns)
+  abund_sub <- as.data.frame(txi_abund[top_genes, , drop = FALSE])
+  
+  # 3. Transpose to get: rows = patients, cols = genes
+  df <- as.data.frame(t(abund_sub))
+  
+  if (identical(rownames(df), names(class_vector))) {
+    df$label <- factor(class_vector) 
+  } else {
+    stop("error! names don't match between txi_abund and class_vector")
+  }
+
+  auc_result <- NA
+  preds_df <- data.frame()
+  train_auc <- NA
+  auc_per_fold <- NA  # ensure this always exists
+
+  if (cv) {
+    folds <- createFolds(df$label, k = 5, returnTrain = TRUE)
+    prob_vec <- c()
+    pred_vec <- c()
+    true_vec <- c()
+    auc_per_fold <- c()
+  
+    for (i in seq_along(folds)) {
+      train_idx <- folds[[i]]
+      train <- df[train_idx, ]
+      test <- df[-train_idx, ]
+  
+      model <- randomForest(label ~ ., data = train)
+      probs <- predict(model, test, type = "prob")[, 2]
+      preds <- ifelse(probs >= 0.5, 1, 0)
+  
+      prob_vec <- c(prob_vec, probs)
+      pred_vec <- c(pred_vec, preds)
+      true_vec <- c(true_vec, as.numeric(as.character(test$label)))
+  
+      fold_auc <- auc(roc(as.numeric(as.character(test$label)), probs))
+      auc_per_fold <- c(auc_per_fold, fold_auc)
+    }
+  
+    auc_result <- mean(auc_per_fold)
+    preds_df <- data.frame(Prob = prob_vec, Pred = pred_vec, True = true_vec)
+
+  } else {
+    train_idx <- sample(seq_len(nrow(df)), size = 0.7 * nrow(df))
+    train <- df[train_idx, ]
+    test <- df[-train_idx, ]
+
+    model <- randomForest(label ~ ., data = train)
+
+    probs <- predict(model, test, type = "prob")[, 2]
+    preds <- ifelse(probs >= 0.5, 1, 0)
+    true <- as.numeric(as.character(test$label))
+    auc_result <- auc(roc(true, probs))
+
+    train_probs <- predict(model, train, type = "prob")[, 2]
+    train_true <- as.numeric(as.character(train$label))
+    train_auc <- auc(roc(train_true, train_probs))
+
+    preds_df <- data.frame(Prob = probs, Pred = preds, True = true)
+  }
+  
+  # Final model trained on ALL data
+  final_model <- randomForest(label ~ ., data = df)
+  
+  # Final predictions on ALL data
+  final_probs <- predict(final_model, df, type = "prob")[, 2]
+  final_preds <- ifelse(final_probs >= 0.5, 1, 0)
+  final_true <- as.numeric(as.character(df$label))
+  
+  final_predictions_df <- data.frame(
+    Sample = rownames(df),
+    Prob = final_probs,
+    Pred = final_preds,
+    True = final_true
+  )
+
+  return(list(
+    cv_auc = auc_result,
+    fold_aucs = auc_per_fold,
+    final_model = final_model,
+    final_predictions = final_predictions_df,
+    top_genes = top_genes   # ✅ NEW: store top genes used
+  ))
+}
+
+
+
+
+# Call these functions
+
+
+# 1) -> Supervised
+supervised_binary_class <- supervised.metadata$binary_enrleuks
+names(supervised_binary_class) <- supervised.metadata$ptid
+
+# thres = 1 - 20
+supervised_model_1_gene <- build_model(results.df = supervised.filtered$results, txi_abund = supervised.filtered$abundance, class_vector = supervised_binary_class, top_x_genes = 1, cv = TRUE)
+supervised_model_2_gene <- build_model(results.df = supervised.filtered$results, txi_abund = supervised.filtered$abundance, class_vector = supervised_binary_class, top_x_genes = 2, cv = TRUE)
+supervised_model_3_gene <- build_model(results.df = supervised.filtered$results, txi_abund = supervised.filtered$abundance, class_vector = supervised_binary_class, top_x_genes = 3, cv = TRUE)
+supervised_model_5_gene <- build_model(results.df = supervised.filtered$results, txi_abund = supervised.filtered$abundance, class_vector = supervised_binary_class, top_x_genes = 5, cv = TRUE)
+supervised_model_10_gene <- build_model(results.df = supervised.filtered$results, txi_abund = supervised.filtered$abundance, class_vector = supervised_binary_class, top_x_genes = 10, cv = TRUE)
+supervised_model_20_gene <- build_model(results.df = supervised.filtered$results, txi_abund = supervised.filtered$abundance, class_vector = supervised_binary_class, top_x_genes = 20, cv = TRUE)
+
+library(writexl)
+
+# Create a named list of data frames
+predictions_list <- list(
+  "Top_1_Gene" = supervised_model_1_gene$final_predictions,
+  "Top_2_Genes" = supervised_model_2_gene$final_predictions,
+  "Top_3_Genes" = supervised_model_3_gene$final_predictions,
+  "Top_5_Genes" = supervised_model_5_gene$final_predictions,
+  "Top_10_Genes" = supervised_model_10_gene$final_predictions,
+  "Top_20_Genes" = supervised_model_20_gene$final_predictions
+)
+
+# Write to Excel (one sheet per model)
+write_xlsx(predictions_list, path = "supervised_predictions.xlsx")
+
+# 2) -> Unsupervised
+unsupervised_binary_class <- as.factor(as.numeric(unsupervised.metadata$host_cluster))
+names(unsupervised_binary_class) <- unsupervised.metadata$ptid
+
+unsupervised_model_1_gene <- build_model(results.df = unsupervised.filtered$results, txi_abund = unsupervised.filtered$abundance, class_vector = unsupervised_binary_class, top_x_genes = 1, cv = TRUE)
+unsupervised_model_2_gene <- build_model(results.df = unsupervised.filtered$results, txi_abund = unsupervised.filtered$abundance, class_vector = unsupervised_binary_class, top_x_genes = 2, cv = TRUE)
+unsupervised_model_3_gene <- build_model(results.df = unsupervised.filtered$results, txi_abund = unsupervised.filtered$abundance, class_vector = unsupervised_binary_class, top_x_genes = 3, cv = TRUE)
+unsupervised_model_5_gene <- build_model(results.df = unsupervised.filtered$results, txi_abund = unsupervised.filtered$abundance, class_vector = unsupervised_binary_class, top_x_genes = 5, cv = TRUE)
+unsupervised_model_10_gene <- build_model(results.df = unsupervised.filtered$results, txi_abund = unsupervised.filtered$abundance, class_vector = unsupervised_binary_class, top_x_genes = 10, cv = TRUE)
+unsupervised_model_20_gene <- build_model(results.df = unsupervised.filtered$results, txi_abund = unsupervised.filtered$abundance, class_vector = unsupervised_binary_class, top_x_genes = 20, cv = TRUE)
+
+predictions_list <- list(
+  "Top_1_Gene" = unsupervised_model_1_gene$final_predictions,
+  "Top_2_Genes" = unsupervised_model_2_gene$final_predictions,
+  "Top_3_Genes" = unsupervised_model_3_gene$final_predictions,
+  "Top_5_Genes" = unsupervised_model_5_gene$final_predictions,
+  "Top_10_Genes" = unsupervised_model_10_gene$final_predictions,
+  "Top_20_Genes" = unsupervised_model_20_gene$final_predictions
+)
+
+# Write to Excel (one sheet per model)
+write_xlsx(predictions_list, path = "unsupervised_predictions.xlsx")
+
+```
+
+### Call the function on all 496 patients
+
+```{r call on everything}
+
+```
+
+### Compute the RPM score using new way: largest representative species
+
+```{r new RPM score}
+# load('/data/mchomm/Homm-UTI-transcriptome/data/reads.meta.counts.496.RData')
+load("/data/mchomm/Homm-UTI-transcriptome/data/bracken_rpm_496.RData")
+
+seven.pathogens <- c("Escherichia coli", "Klebsiella pneumoniae", "Enterococcus faecalis", "Proteus mirabilis", 
+                     "Pseudomonas aeruginosa", "Staphylococcus saprophyticus", "Streptococcus agalactiae") 
+
+bracken_rpm_496 <- bracken_rpm_496[patients.over.thres , ]
+
+bracken_subset <- bracken_rpm_496[ , colnames(bracken_rpm_496) %in% seven.pathogens]
+rpm_sums_496 <- rowSums(bracken_subset, na.rm = TRUE)
+
+# Get the RPM value of the most abundant pathogen per row
+bracken_subset$largest_pathogen_rpm <- apply(bracken_subset, 1, max)
+
+# Get the name of the most abundant pathogen per row
+bracken_subset$largest_pathogen <- apply(bracken_subset, 1, function(row) {
+  names(row)[which.max(row)]
+})
+
+bracken_subset$logged_largest_pathogen_rpm <- sapply(bracken_subset$largest_pathogen_rpm, function(x) log10(x + 1))
+
+# write_xlsx(bracken_subset, path = "new_pathogen_abundance.xlsx")
+
+kmeans(bracken_subset$logged_largest_pathogen_rpm, centers = 2) # thres therefore equals 3.312941
+kmeans_thres <- 3.312941
+
+hist(bracken_subset$logged_largest_pathogen_rpm, breaks = 10)
+abline(v = 3.312941, col = "red", lwd = 2, lty = 2)
+
+bracken_subset$uti <- reads.meta.counts.496[match(rownames(bracken_subset), reads.meta.counts.496$ptid) , ]$uti
+bracken_subset$predicted_uti <- ifelse(bracken_subset$logged_largest_pathogen_rpm >= kmeans_thres, 1, 0)
+  
+roc_obj <- roc(bracken_subset$uti, bracken_subset$logged_largest_pathogen_rpm)
+# Print AUC
+auc_value <- auc(roc_obj)
+print(auc_value)
+
+# Now see predictive power across 496 patients
+load("/data/mchomm/Homm-UTI-transcriptome/data/bracken_rpm_496.RData")
+
+seven.pathogens <- c("Escherichia coli", "Klebsiella pneumoniae", "Enterococcus faecalis", "Proteus mirabilis", 
+                     "Pseudomonas aeruginosa", "Staphylococcus saprophyticus", "Streptococcus agalactiae") 
+
+bracken_subset <- bracken_rpm_496[ , colnames(bracken_rpm_496) %in% seven.pathogens]
+rpm_sums_496 <- rowSums(bracken_subset, na.rm = TRUE)
+
+# Get the RPM value of the most abundant pathogen per row
+bracken_subset$largest_pathogen_rpm <- apply(bracken_subset, 1, max)
+
+# Get the name of the most abundant pathogen per row
+bracken_subset$largest_pathogen <- apply(bracken_subset, 1, function(row) {
+  names(row)[which.max(row)]
+})
+
+bracken_subset$logged_largest_pathogen_rpm <- sapply(bracken_subset$largest_pathogen_rpm, function(x) log10(x + 1))
+
+bracken_subset$uti <- reads.meta.counts.496[match(rownames(bracken_subset), reads.meta.counts.496$ptid) , ]$uti
+bracken_subset$predicted_uti <- ifelse(bracken_subset$logged_largest_pathogen_rpm >= kmeans_thres, 1, 0)
+  
+roc_obj <- roc(bracken_subset$uti, bracken_subset$logged_largest_pathogen_rpm)
+
+# Print AUC
+auc_value <- auc(roc_obj)
+print(auc_value)
+
+write_xlsx(bracken_subset, path = "new_pathogen_abundance.xlsx")
+
+```
+
+### How do the gene models perform on validation patients?
+
+```{r validation testing}
+
+# Function to predict the validation
+
+predict_validation <- function(model_obj, validation_abund, validation_class_vector = NULL) {
+  library(pROC)
+
+  top_genes <- model_obj$top_genes
+  rf_model <- model_obj$final_model
+  
+  # Subset validation to those genes
+  common_genes <- intersect(top_genes, rownames(validation_abund))
+  if (length(common_genes) < length(top_genes)) {
+    warning("Some genes missing in validation data.")
+  }
+  
+  val_df <- as.data.frame(t(validation_abund[common_genes, , drop = FALSE]))
+  
+  # Make predictions
+  probs <- predict(rf_model, val_df, type = "prob")[, 2]
+  preds <- ifelse(probs >= 0.5, 1, 0)
+  
+  result <- data.frame(Sample = rownames(val_df), Prob = probs, Pred = preds)
+  
+  # If you have ground truth, compute AUC
+  if (!is.null(validation_class_vector)) {
+    true <- validation_class_vector
+    print(true)
+    result$True <- true
+    print(result)
+    auc_val <- auc(roc(true, probs))
+    attr(result, "validation_auc") <- auc_val
+  }
+  
+  return(result)
+}
+
+# Actually calling the function
+
+validation_abund <- Vtxi$abundance[ , validation_patients]
+val_binary_enrleuks <- val_metadata[validation_patients , ]
+val_binary_enrleuks <- sapply(val_binary_enrleuks$enrleuks, function(x) ifelse(x > 1, 1, 0))
+
+val_pred_5gene <- predict_validation(
+  model_obj = unsupervised_model_3_gene,
+  validation_abund = validation_abund
+)
+rownames(val_pred_5gene) <- val_pred_5gene$Sample
+rownames(val_metadata) <- val_metadata$ptid
+
+val_pred_5gene$enrleuks <- val_binary_enrleuks
+
+table(val_pred_5gene$Pred, val_pred_5gene$enrleuks)
+
+# Across the board
+
+unsupervised_models <- list(
+  "Top_1" = unsupervised_model_1_gene,
+  "Top_2" = unsupervised_model_2_gene,
+  "Top_3" = unsupervised_model_3_gene,
+  "Top_5" = unsupervised_model_5_gene,
+  "Top_10" = unsupervised_model_10_gene,
+  "Top_20" = unsupervised_model_20_gene
+)
+
+unsupervised_validation_results <- lapply(unsupervised_models, function(model_obj) {
+  predict_validation(model_obj, validation_abund = validation_abund, validation_class_vector = val_binary_enrleuks)
+})
+
+# library(pROC)
+
+validation_aucs <- sapply(names(validation_results), function(name) {
+  df <- validation_results[[name]]
+  
+  print(table(df$True, df$Pred))
+  
+  if (!("True" %in% names(df))) {
+    return(NA)
+  }
+  
+  true <- df$True
+  probs <- df$Prob
+  
+  # skip if only one class present
+  if (length(unique(true)) < 2) {
+    warning(paste("Skipping", name, "- only one class in True labels"))
+    return(NA)
+  }
+  
+  auc_val <- auc(roc(true, probs))
+  auc_val
+})
+
+validation_aucs
+
+
+# Supervised across the board
+
+supervised_models <- list(
+  "Top_1" = supervised_model_1_gene,
+  "Top_2" = supervised_model_2_gene,
+  "Top_3" = supervised_model_3_gene,
+  "Top_5" = supervised_model_5_gene,
+  "Top_10" = supervised_model_10_gene,
+  "Top_20" = supervised_model_20_gene
+)
+
+supervised_validation_results <- lapply(supervised_models, function(model_obj) {
+  predict_validation(model_obj, validation_abund = validation_abund, validation_class_vector = val_binary_enrleuks)
+})
+
+library(writexl)
+
+# Unsupervised validation predictions
+write_xlsx(
+  unsupervised_validation_results,
+  path = "unsupervised_validation_predictions.xlsx"
+)
+
+# Supervised validation predictions
+write_xlsx(
+  supervised_validation_results,
+  path = "supervised_validation_predictions.xlsx"
+)
+
+# library(pROC)
+
+validation_aucs <- sapply(names(unsupervised_validation_results), function(name) {
+  df <- unsupervised_validation_results[[name]]
+  
+  print(table(df$True, df$Pred))
+  
+  if (!("True" %in% names(df))) {
+    return(NA)
+  }
+  
+  true <- df$True
+  probs <- df$Prob
+  
+  # skip if only one class present
+  if (length(unique(true)) < 2) {
+    warning(paste("Skipping", name, "- only one class in True labels"))
+    return(NA)
+  }
+  
+  auc_val <- auc(roc(true, probs))
+  auc_val
+})
+
+validation_aucs
+
+```
+
+### Map gene names back to their gene symbols
+
+```{r map gene ensembl ids back to symbol}
+
+mart <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+ensembl_ids_unsupervised <- unsupervised_model_1_gene$top_genes
+ensembl_ids_supervised <- supervised_model_1_gene$top_genes
+
+gene_map_unsupervised <- getBM(
+  attributes = c("ensembl_gene_id", "hgnc_symbol"),
+  filters = "ensembl_gene_id",
+  values = ensembl_ids_unsupervised,
+  mart = mart
+)
+
+gene_map_supervised <- getBM(
+  attributes = c("ensembl_gene_id", "hgnc_symbol"),
+  filters = "ensembl_gene_id",
+  values = ensembl_ids_supervised,
+  mart = mart
+)
+
+gene_map_unsupervised
+gene_map_supervised
+
+```
+
+### Retry testing on validation set of patients
+
+```{r validation test pt 2}
+library(pROC)
+
+# model_obj: one of your supervised_model_1_gene, etc.
+# txi_abund_val: abundance matrix for validation set (genes = rows, samples = cols)
+# val_class_vector: named vector of 0/1 (or similar) labels, names = ptid
+# threshold: classification threshold (default 0.5)
+eval_on_validation <- function(model_obj, txi_abund_val, val_class_vector, threshold = 0.5) {
+  # 1. Use the same genes that were used in training
+  top_genes <- model_obj$top_genes
+  
+  common_genes <- intersect(top_genes, rownames(txi_abund_val))
+  if (length(common_genes) < length(top_genes)) {
+    warning("Some top genes are missing from validation matrix: ",
+            paste(setdiff(top_genes, common_genes), collapse = ", "))
+  }
+  
+  # 2. Subset validation abundance to those genes and transpose
+  abund_sub_val <- as.data.frame(txi_abund_val[common_genes, , drop = FALSE])
+  df_val <- as.data.frame(t(abund_sub_val))   # rows = patients, cols = genes
+  
+  # 3. Align class vector with samples in df_val
+  #    Assumes names(val_class_vector) are ptids matching colnames in txi_abund_val
+  val_class_vector <- val_class_vector[rownames(df_val)]
+  
+  if (any(is.na(val_class_vector))) {
+    stop("Some samples in the validation matrix are missing labels.")
+  }
+  
+  # 4. Predict probabilities on the validation set
+  probs_val <- predict(model_obj$final_model, newdata = df_val, type = "prob")[, 2]
+  preds_val <- ifelse(probs_val >= threshold, 1, 0)
+  true_val  <- as.numeric(as.character(val_class_vector))
+  
+  # 5. Validation AUC
+  val_auc <- auc(roc(true_val, probs_val))
+  
+  # 6. Nice predictions data frame
+  predictions_df <- data.frame(
+    Sample = rownames(df_val),
+    Prob   = probs_val,
+    Pred   = preds_val,
+    True   = true_val
+  )
+  
+  list(
+    val_auc      = val_auc,
+    val_predictions = predictions_df
+  )
+}
+
+
+# Actually obtain results for the 186 patients
+
+# Validation metadata shortcut (rename if your object is different)
+val_meta_unsup <- metadata_885[patients_177 , ]
+
+# Build validation class vector (same transformation as training)
+val_unsupervised_binary_class <- as.factor(
+  as.numeric(val_meta_unsup$binary_enrleuks)
+)
+names(val_unsupervised_binary_class) <- val_meta_unsup$ptid
+
+# Shortcut for validation abundance matrix
+txi_abund_val_unsup <- Vtxi$abundance[ , patients_177]
+
+unsupervised_val_1_gene <- eval_on_validation(
+  model_obj        = unsupervised_model_1_gene,
+  txi_abund_val    = txi_abund_val_unsup,
+  val_class_vector = val_unsupervised_binary_class
+)
+
+unsupervised_val_2_gene <- eval_on_validation(
+  model_obj        = unsupervised_model_2_gene,
+  txi_abund_val    = txi_abund_val_unsup,
+  val_class_vector = val_unsupervised_binary_class
+)
+
+unsupervised_val_3_gene <- eval_on_validation(
+  model_obj        = unsupervised_model_3_gene,
+  txi_abund_val    = txi_abund_val_unsup,
+  val_class_vector = val_unsupervised_binary_class
+)
+
+unsupervised_val_5_gene <- eval_on_validation(
+  model_obj        = unsupervised_model_5_gene,
+  txi_abund_val    = txi_abund_val_unsup,
+  val_class_vector = val_unsupervised_binary_class
+)
+
+unsupervised_val_10_gene <- eval_on_validation(
+  model_obj        = unsupervised_model_10_gene,
+  txi_abund_val    = txi_abund_val_unsup,
+  val_class_vector = val_unsupervised_binary_class
+)
+
+unsupervised_val_20_gene <- eval_on_validation(
+  model_obj        = unsupervised_model_20_gene,
+  txi_abund_val    = txi_abund_val_unsup,
+  val_class_vector = val_unsupervised_binary_class
+)
+
+# Peek at validation AUCs
+unsupervised_val_1_gene$val_auc
+unsupervised_val_2_gene$val_auc
+unsupervised_val_3_gene$val_auc
+unsupervised_val_5_gene$val_auc
+unsupervised_val_10_gene$val_auc
+unsupervised_val_20_gene$val_auc
+
+
+```
+
+### See actual model performance now for predicting binary UTI
+
+```{r overall model performance}
+
+# Test -> For 10-gene
+sample_3_gene <- unsupervised_val_3_gene$val_predictions
+sample_3_gene$ptid <- sample_3_gene$Sample
+validation_joined <- Val_venn_df %>%
+  inner_join(sample_3_gene, by = "ptid")
+
+validation_joined$clinical_uti_final <- mapply(function(x, y) ifelse(x == y & y == 1, 1, 0), validation_joined$uti, validation_joined$binary_enrleuks)
+validation_joined$rnaseq_uti_final <- mapply(function(x, y) ifelse(x == y & y == 1, 1, 0), validation_joined$RPM_sums_binary, validation_joined$Pred)
+
+sample_10_gene <- unsupervised_val_10_gene$val_predictions
+sample_10_gene$ptid <- sample_10_gene$Sample
+validation_joined <- Val_venn_df %>%
+  inner_join(sample_10_gene, by = "ptid")
+
+validation_joined$clinical_uti_final <- mapply(function(x, y) ifelse(x == y & y == 1, 1, 0), validation_joined$uti, validation_joined$binary_enrleuks)
+validation_joined$rnaseq_uti_final <- mapply(function(x, y) ifelse(x == y & y == 1, 1, 0), validation_joined$RPM_sums_binary, validation_joined$Pred)
+
+table(validation_joined$clinical_uti_final, validation_joined$rnaseq_uti_final)
+
+sample_20_gene <- unsupervised_val_20_gene$val_predictions
+sample_20_gene$ptid <- sample_20_gene$Sample
+validation_joined <- Val_venn_df %>%
+  inner_join(sample_20_gene, by = "ptid")
+
+validation_joined$clinical_uti_final <- mapply(function(x, y) ifelse(x == y & y == 1, 1, 0), validation_joined$uti, validation_joined$binary_enrleuks)
+validation_joined$rnaseq_uti_final <- mapply(function(x, y) ifelse(x == y & y == 1, 1, 0), validation_joined$RPM_sums_binary, validation_joined$Pred)
+
+```
+
+
+
+
+
+
