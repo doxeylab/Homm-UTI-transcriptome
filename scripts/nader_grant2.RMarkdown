@@ -623,9 +623,9 @@ write_xlsx(predictions_list, path = "unsupervised_predictions.xlsx")
 
 ```{r call on everything}
 
-```install.packages()
-
 ### Compute the RPM score using new way: largest representative species
+
+```
 
 ```{r new RPM score}
 # load('/data/mchomm/Homm-UTI-transcriptome/data/reads.meta.counts.496.RData')

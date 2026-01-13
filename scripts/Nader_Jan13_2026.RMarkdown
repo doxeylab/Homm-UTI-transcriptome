@@ -1,0 +1,63 @@
+---
+title: "Nader stuff"
+author: "Max Homm"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r analysis}
+install.packages("writexl")
+library(writexl)
+library(tibble)
+
+# Make sure that you've loaded in RData file for at least Dec 4, 2025
+
+#### 1 -> Save the DESeq2 results (top 20 genes expression data)
+res.df.human.top.20 <- res.df.human[
+  order(res.df.human$pvalue),
+][1:20, ]
+
+il1b_id <- "ENSG00000125538"
+
+if (!il1b_id %in% rownames(res.df.human.top.20)) {
+  il1b_row <- res.df.human[rownames(res.df.human) == il1b_id, ]
+  res.df.human.top.20 <- rbind(res.df.human.top.20, il1b_row)
+}
+
+deseq_top_20_genes <- rownames(res.df.human.top.20)
+
+# Obtain the TPM values for all 887 patients
+
+View(Vtxi$abundance)
+View(txi$abundance)
+mega_tpm_values <- cbind(txi$abundance, Vtxi$abundance)
+mega_tpm_values <- mega_tpm_values[deseq_top_20_genes , ]
+
+# Write excel
+
+write.csv(res.df.human.top.20, file = "Jan_13_2025_genes.csv", quote = FALSE)
+write.csv(mega_tpm_values, file = "Jan_13_2025_abundance.csv", quote = FALSE)
+
+
+#### 2 -> Save the model gene expression data
+
+model_top_20_genes <- unsupervised_model_20_gene$top_genes
+
+res.df.model.top.20 <- res.df.human[c(model_top_20_genes, il1b_id) , ]
+res.df.model.top.20.genes <- rownames(res.df.model.top.20)
+
+
+# Obtain the TPM values for all 887 patients
+
+mega_tpm_values_2 <- cbind(txi$abundance, Vtxi$abundance)
+mega_tpm_values_2 <- mega_tpm_values_2[res.df.model.top.20.genes , ]
+
+# Write excel
+write.csv(res.df.model.top.20, file = "Jan_13_2025_genes_2.csv", quote = FALSE)
+write.csv(mega_tpm_values_2, file = "Jan_13_2025_abundance_2.csv", quote = FALSE)
+
+```
