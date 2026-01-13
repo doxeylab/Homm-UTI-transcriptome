@@ -54,7 +54,7 @@ pkgs <- c(
   "ensembldb", "tximport", "AnnotationHub", "clusterProfiler", "AnnotationDbi",
   "ggvenn", "ComplexHeatmap", "reshape2", "dplyr", "tidyr", "readxl", "pROC",
   "circlize", "ggpubr", "effsize", "mclust", "classInt", "patchwork", "grid",
-  "eulerr", "devtools", "xCell", "plotly"
+  "eulerr", "devtools", "xCell", "plotly", "showtext"
 )
 
 # function to get version
