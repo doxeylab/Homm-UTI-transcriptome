@@ -10,7 +10,7 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 ```
 
 ```{r analysis}
-install.packages("writexl")
+# install.packages("writexl")
 library(writexl)
 library(tibble)
 
@@ -60,4 +60,124 @@ mega_tpm_values_2 <- mega_tpm_values_2[res.df.model.top.20.genes , ]
 write.csv(res.df.model.top.20, file = "Jan_13_2025_genes_2.csv", quote = FALSE)
 write.csv(mega_tpm_values_2, file = "Jan_13_2025_abundance_2.csv", quote = FALSE)
 
+
 ```
+
+```{r Experiment: building a RF with rpmsums, CSF3R, IL1B, IL8, LIM2K}
+test_4_genes <- c("ENSG00000119535", 
+                  "ENSG00000125538", 
+                  "ENSG00000169429", 
+                  "ENSG00000182541")
+test_model1 <- res.df.human[test_4_genes , ]
+
+mega_tpm_values_3 <- cbind(txi$abundance, Vtxi$abundance)
+mega_tpm_values_3 <- t(mega_tpm_values_3[test_4_genes , ])
+batch <- sapply(rownames(mega_tpm_values_3) , function(x) 
+  if (x %in% validation_patients) {return("test")}
+  else if (x %in% as.character(patients.kept)) {return("train")}
+  else {return("other")})
+
+# Add class vector and rpm_sums into df
+if (!all(rownames(mega_tpm_values_3) %in% names(batch))) {
+  stop("Not all rownames are present in batch")
+}
+mega_tpm_values_3 <- cbind(mega_tpm_values_3, batch = data.frame(batch))
+
+# Add rpm_sums value now
+Vrpm_sums <- Vbracken$log10_RPM
+names(Vrpm_sums) <- rownames(Vbracken)
+Trpm_sums <- rpm_sums_496
+rpm_sums_all <- c(Vrpm_sums, Trpm_sums)
+mega_tpm_values_3$rpm_sums <- rpm_sums_all[match(rownames(mega_tpm_values_3), names(rpm_sums_all))]
+
+# Finally add column with UTI and leukocyte esterase
+mega_tpm_values_3$uti <- metadata_885$uti[
+  match(rownames(mega_tpm_values_3), metadata_885$ptid)
+]
+
+mega_tpm_values_3$enrleuks <- metadata_885$enrleuks[
+  match(rownames(mega_tpm_values_3), metadata_885$ptid)
+]
+
+mega_tpm_values_3$binary_enrleuks <- ifelse(
+  is.na(mega_tpm_values_3$enrleuks),
+  NA,
+  as.integer(mega_tpm_values_3$enrleuks > 1)
+)
+
+mega_tpm_values_3$class <- ifelse(
+  is.na(mega_tpm_values_3$uti) | is.na(mega_tpm_values_3$binary_enrleuks),
+  NA,
+  as.integer(
+    mega_tpm_values_3$uti == 1 &
+    mega_tpm_values_3$binary_enrleuks == 1
+  )
+)
+
+# Train rf for fun
+mega_tpm_values_3$class <- factor(
+  mega_tpm_values_3$class,
+  levels = c(0, 1),
+  labels = c("no", "yes")
+)
+
+train_idx <- mega_tpm_values_3$batch == "train"
+test_idx  <- mega_tpm_values_3$batch == "test"
+table(train_idx, useNA = "ifany")
+gene_cols <- colnames(mega_tpm_values_3)[1:4]
+feature_cols <- c(gene_cols, "rpm_sums")
+train_idx <- train_idx & !is.na(mega_tpm_values_3$class)
+test_idx  <- test_idx  & !is.na(mega_tpm_values_3$class)
+
+library(randomForest)
+
+rf <- randomForest(
+  x = mega_tpm_values_3[train_idx, feature_cols],
+  y = mega_tpm_values_3$class[train_idx],
+  ntree = 1000,
+  importance = TRUE
+)
+
+# Test now
+pred_class <- predict(
+  rf,
+  newdata = mega_tpm_values_3[test_idx, feature_cols],
+  type = "response"
+)
+
+pred_prob <- predict(
+  rf,
+  newdata = mega_tpm_values_3[test_idx, feature_cols],
+  type = "prob"
+)[, "yes"]
+
+table(
+  truth = mega_tpm_values_3$class[test_idx],
+  pred  = pred_class
+)
+
+library(pROC)
+
+roc_obj <- roc(
+  mega_tpm_values_3$class[test_idx],
+  pred_prob
+)
+
+auc(roc_obj)
+varImpPlot(rf)
+
+# Choose a better thres
+
+coords(
+  roc_obj,
+  x = "best",
+  best.method = "youden"
+)
+
+threshold <- coords(roc_obj, "best", best.method = "youden")[["threshold"]]
+pred_class_new <- ifelse(pred_prob >= threshold, "yes", "no")
+
+plot(roc_obj)
+
+```
+
