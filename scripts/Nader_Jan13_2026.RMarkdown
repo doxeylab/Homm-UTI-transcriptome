@@ -65,8 +65,8 @@ write.csv(mega_tpm_values_2, file = "Jan_13_2025_abundance_2.csv", quote = FALSE
 
 ```{r Experiment: building a RF with rpmsums, CSF3R, IL1B, IL8, LIM2K}
 test_4_genes <- c("ENSG00000119535", 
-                  "ENSG00000125538", 
-                  "ENSG00000169429", 
+                  "ENSG00000125538",
+                  "ENSG00000169429",
                   "ENSG00000182541")
 test_model1 <- res.df.human[test_4_genes , ]
 
@@ -124,12 +124,13 @@ mega_tpm_values_3$class <- factor(
 train_idx <- mega_tpm_values_3$batch == "train"
 test_idx  <- mega_tpm_values_3$batch == "test"
 table(train_idx, useNA = "ifany")
-gene_cols <- colnames(mega_tpm_values_3)[1:4]
+gene_cols <- colnames(mega_tpm_values_3)[1:4] # to change as genes change
 feature_cols <- c(gene_cols, "rpm_sums")
 train_idx <- train_idx & !is.na(mega_tpm_values_3$class)
 test_idx  <- test_idx  & !is.na(mega_tpm_values_3$class)
 
 library(randomForest)
+set.seed(1)
 
 rf <- randomForest(
   x = mega_tpm_values_3[train_idx, feature_cols],
@@ -181,3 +182,205 @@ plot(roc_obj)
 
 ```
 
+```{r Nader requests -> Jan 21}
+
+##### 1 -> Train the RF model on top 50 or top 100 genes first
+
+## a -> Model 1: genes only
+res.df.human.top.100 <- res.df.human[
+  order(res.df.human$pvalue),
+][1:100, ]
+
+deseq_top_100_genes <- rownames(res.df.human.top.100)
+
+mega_tpm_values_100 <- cbind(txi$abundance, Vtxi$abundance)
+mega_tpm_values_100 <- mega_tpm_values_100[deseq_top_100_genes , ]
+
+mega_tpm_values_100 <- t(mega_tpm_values_100)
+mega_tpm_values_100 <- as.data.frame(mega_tpm_values_100)
+
+batch <- sapply(rownames(mega_tpm_values_100), function(x) {
+  if (x %in% validation_patients) {
+    "test"
+  } else if (x %in% as.character(patients.kept)) {
+    "train"
+  } else {
+    "other"
+  }
+})
+
+mega_tpm_values_100$batch <- batch
+Vrpm_sums <- Vbracken$log10_RPM
+names(Vrpm_sums) <- rownames(Vbracken)
+
+Trpm_sums <- rpm_sums_496
+rpm_sums_all <- c(Vrpm_sums, Trpm_sums)
+
+mega_tpm_values_100$rpm_sums <-
+  rpm_sums_all[match(rownames(mega_tpm_values_100),
+                     names(rpm_sums_all))]
+
+mega_tpm_values_100$uti <- metadata_885$uti[
+  match(rownames(mega_tpm_values_100), metadata_885$ptid)
+]
+
+mega_tpm_values_100$enrleuks <- metadata_885$enrleuks[
+  match(rownames(mega_tpm_values_100), metadata_885$ptid)
+]
+
+mega_tpm_values_100$binary_enrleuks <- ifelse(
+  is.na(mega_tpm_values_100$enrleuks),
+  NA,
+  as.integer(mega_tpm_values_100$enrleuks > 1)
+)
+
+mega_tpm_values_100$class <- ifelse(
+  is.na(mega_tpm_values_100$uti) | is.na(mega_tpm_values_100$binary_enrleuks),
+  NA,
+  as.integer(
+    mega_tpm_values_100$uti == 1 &
+    mega_tpm_values_100$binary_enrleuks == 1
+  )
+)
+
+mega_tpm_values_100$class <- factor(
+  mega_tpm_values_100$class,
+  levels = c(0, 1),
+  labels = c("no", "yes")
+)
+
+train_idx <- mega_tpm_values_100$batch == "train"
+test_idx  <- mega_tpm_values_100$batch == "test"
+
+train_idx <- train_idx & !is.na(mega_tpm_values_100$class)
+test_idx  <- test_idx  & !is.na(mega_tpm_values_100$class)
+
+gene_cols <- deseq_top_100_genes
+feature_cols <- c(gene_cols, "rpm_sums")
+
+library(randomForest)
+set.seed(1)
+
+rf_100 <- randomForest(
+  x = mega_tpm_values_100[train_idx, feature_cols],
+  y = mega_tpm_values_100$class[train_idx],
+  ntree = 1000,
+  importance = TRUE
+)
+
+pred_prob <- predict(
+  rf_100,
+  newdata = mega_tpm_values_100[test_idx, feature_cols],
+  type = "prob"
+)[, "yes"]
+
+pred_class <- predict(
+  rf_100,
+  newdata = mega_tpm_values_100[test_idx, feature_cols],
+  type = "response"
+)
+
+auc(roc_obj)
+
+varImpPlot(rf_100)
+
+table(
+  truth = mega_tpm_values_100$class[test_idx],
+  pred  = pred_class
+)
+
+library(pROC)
+roc_obj <- roc(
+  mega_tpm_values_100$class[test_idx],
+  pred_prob
+)
+
+auc(roc_obj)
+varImpPlot(rf_100)
+
+
+## b -> Model 2: genes + rpm_sums
+
+
+##### 2 -> Train the RF model again, but only on the top 2, 3, 5, 10, etc. 
+#          DECIDED by the RF model!
+
+## a -> Model 1: genes only
+
+## b -> Model 2: genes + rpm_sums
+
+##### 3 -> Test on the validation set -> predict clinical labels here
+
+##### 4 -> Put this in an excel doc for Nader
+
+
+```
+
+```{r Temp: rebuild model with ranked genes}
+
+imp <- importance(rf_100, type = 1)
+imp <- sort(imp[,1], decreasing = TRUE)
+
+run_rf <- function(gene_set, use_rpm = FALSE) {
+
+  feature_cols <- gene_set
+  if (use_rpm) {
+    feature_cols <- c(feature_cols, "rpm_sums")
+  }
+
+  rf <- randomForest(
+    x = mega_tpm_values_100[train_idx, feature_cols, drop = FALSE],
+    y = mega_tpm_values_100$class[train_idx],
+    ntree = 1000
+  )
+
+  pred_prob <- predict(
+    rf,
+    newdata = mega_tpm_values_100[test_idx, feature_cols, drop = FALSE],
+    type = "prob"
+  )[,"yes"]
+
+  roc_obj <- roc(
+    mega_tpm_values_100$class[test_idx],
+    pred_prob
+  )
+
+  list(
+    auc = auc(roc_obj),
+    roc = roc_obj,
+    rf  = rf
+  )
+}
+
+
+
+# Remove rpm_sums from ranking
+imp_genes <- imp[!names(imp) %in% "rpm_sums"]
+
+# Now define nested gene sets
+top1  <- names(imp_genes)[1]
+top3  <- names(imp_genes)[1:3]
+top5  <- names(imp_genes)[1:5]
+top10 <- names(imp_genes)[1:10]
+
+res_1  <- run_rf(top1)
+res_3  <- run_rf(top3)
+res_5  <- run_rf(top5)
+res_10 <- run_rf(top10)
+
+res_1$auc
+res_3$auc
+res_5$auc
+res_10$auc
+
+res_1_rpm  <- run_rf(top1,  use_rpm = TRUE)
+res_3_rpm  <- run_rf(top3,  use_rpm = TRUE)
+res_5_rpm  <- run_rf(top5,  use_rpm = TRUE)
+res_10_rpm <- run_rf(top10, use_rpm = TRUE)
+
+res_1_rpm$auc
+res_3_rpm$auc
+res_5_rpm$auc
+res_10_rpm$auc
+
+```
