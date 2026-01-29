@@ -47,6 +47,7 @@ library(xCell)
 library(circlize)
 library(plotly)
 library(showtext)
+library(writexl)
 
 # List of your packages
 pkgs <- c(
@@ -92,7 +93,7 @@ good.patients <- reads.meta.counts.239$ptid
 rpmdata.239 <- bracken_rpm_496[as.character(good.patients) , ] 
 print(dim(rpmdata.239))
 
-# Incorporate this better, but these patients had dirty tubes (hence should be removed)
+# Implement this better later, but these patients had dirty tubes (hence should be removed)
 patients.to.remove <- c("10005", "10380", "15887", "15963", "15985", "15991", "15994", "16003", 
                         "16050", "15860", "15900", "15906", "15927", "16018", 
                         "16089")
@@ -249,7 +250,7 @@ summary(pca)$importance[2, 3]
 e. k-means clustering
 
 ```{r k-means clustering}
-set.seed(1)
+set.seed(1) # might not be required since PCA is deterministic
 # Run k-means clustering, k = 2
 kmeans_result_pca <- kmeans(pca_df[ , c("PC1", "PC2")], centers = 2, nstart = 25)
 
@@ -674,7 +675,7 @@ print(conf_matrix)
 optimal_threshold_info <- coords(auc_prot, "best", ret = c("threshold", "sensitivity", "specificity"))
 print(optimal_threshold_info)
 
-# P. aeruginosa -> removing those patients actually gets rid of all PA species
+# P. aeruginosa -> removing those earlier patients actually gets rid of all PA species, so no longer need this
 
 # log.reg.df$pa <- ifelse(reads.meta.counts$mainpathogen == "Pseudomonas Aeruginosa", 1, 0)  
 # log.reg.df$pa[is.na(log.reg.df$pa)] <- 0  
@@ -1972,30 +1973,6 @@ plot(val.new.venn,
      legend = TRUE)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # Extra addition -> colour original pca with csf3r
 
 # Add cluster assignments to your data frame
@@ -2104,7 +2081,6 @@ metadata_5k_filtered_no_dirty <- metadata_5k_filtered[
 ]
 
 # write as an xlsx
-library(writexl)
 write_xlsx(metadata_5k_filtered, path  = "/data/mchomm/Homm-UTI-transcriptome/data/validation/predictions_nov_13_2025.xlsx", col_names = TRUE)
 
 # Create another df with same 719 patients, but include the 7 pathogens RPM scores
